@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+    branches: [main, beta]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test OpenStreamCore
+        run: |
+          set -o pipefail
+          cd OpenStreamCore
+          swift test 2>&1 | tail -n 30
+
+      # The key comes from the repository's secrets; pull requests from forks build without one.
+      - name: TMDB key
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: printf 'TMDB_API_KEY = %s\n' "$TMDB_API_KEY" > Config/Secrets.xcconfig
+
+      - name: Build universal app
+        run: |
+          set -o pipefail
+          xcodebuild -project OpenStream.xcodeproj -scheme OpenStreamMac -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+            build 2>&1 | tee build.log | tail -n 40 \
+            || { echo "::group::Errors"; grep -E "error:" build.log | sort -u | head -100; echo "::endgroup::"; exit 1; }
+          lipo -info build/Build/Products/Release/OpenStream.app/Contents/MacOS/OpenStream
+
+      - name: Package .dmg
+        run: |
+          mkdir dmg
+          cp -R build/Build/Products/Release/OpenStream.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname OpenStream -srcfolder dmg -fs APFS -format ULFO -ov OpenStream.dmg
+          ls -lh OpenStream.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenStream-${{ github.sha }}
+          path: OpenStream.dmg
+          retention-days: 30
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" OpenStream.dmg --title "OpenStream $GITHUB_REF_NAME" \
+            --notes "Download OpenStream.dmg, open it and drag OpenStream into Applications. See the README for the first launch."

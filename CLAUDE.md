@@ -81,9 +81,19 @@ This Mac is Intel (x86_64), macOS 26.7, Xcode 26.5. Builds are slow-ish; increme
 - Screenshots: `screencapture -x file.png` works from the shell; clicks can be posted with a small CGEvent tool kept in the scratchpad.
 - Scratch work goes in `.scratchpad/` (git-ignored).
 
+## Open source
+
+GPLv3 (`LICENSE`). `README.md` (features, download, building, disclaimer, TMDB attribution, which TMDB's terms require), `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, issue templates, screenshots in `docs/screenshots` (captured from the app's window with `screencapture -l <window id>`), README icon `docs/icon.png`. `OpenStream/Credits.rtf` is shown in the About window (TMDB attribution again). Never commit `Config/Secrets.xcconfig`.
+
+## Building and shipping
+
+- CI (`.github/workflows/build.yml`, `macos-26`): core tests, universal Release build (arm64 + x86_64), `OpenStream.dmg` as an artifact; a `v*` tag also creates a GitHub release with it. Needs the repository secret `TMDB_API_KEY`.
+- Version: `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in the pbxproj; note changes in `CHANGELOG.md`.
+- Local Release `.dmg` (when CI isn't available): build `-configuration Release -derivedDataPath build/release`, then `hdiutil create` as CI does.
+
 ## Git
 
-Local repository, branch `main`; not pushed anywhere yet. Commit as the person's GitHub identity once the remote exists (Koda uses `Ivorisnoob <179814302+Ivorisnoob@users.noreply.github.com>`). Commit messages: a short subject, then what changed and why.
+Branch `main`. Commit as `Ivorisnoob <179814302+Ivorisnoob@users.noreply.github.com>` (the global git identity here). Commit messages: a short subject, then what changed and why. Pushing and creating the GitHub repository only when the person asks.
 
 ## Working with the person
 
