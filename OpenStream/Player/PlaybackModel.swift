@@ -243,7 +243,10 @@ final class PlaybackModel {
         }
         phase = .searching
         searching = true
-        for await update in finder.search(identity) {
+        let resting = app?.sources.resting ?? []
+        if !resting.isEmpty { Log.playback.info("Resting: \(resting.sorted().joined(separator: ", "), privacy: .public)") }
+        for await update in finder.search(identity, skipping: everywhere ? [] : resting) {
+            app?.sources.record(update.providerID, update.status)
             guard !Task.isCancelled else { break }
             statuses[update.providerID] = update.status
             if case .failed(let message) = update.status {
@@ -274,6 +277,7 @@ final class PlaybackModel {
         let attempt = Task { @MainActor in
             var found: [StreamSource] = []
             for await update in finder.search(identity, only: [id]) {
+                self.app?.sources.record(update.providerID, update.status)
                 self.statuses[update.providerID] = update.status
                 found += update.sources
             }
@@ -351,6 +355,7 @@ final class PlaybackModel {
         furtherTask = Task {
             for await update in finder.search(identity, only: ids) {
                 guard !Task.isCancelled else { return }
+                app?.sources.record(update.providerID, update.status)
                 statuses[update.providerID] = update.status
                 guard !update.sources.isEmpty else { continue }
                 Log.playback.notice("Source \(update.providerID, privacy: .public) found \(update.sources.count) streams")
@@ -677,6 +682,7 @@ final class PlaybackModel {
         furtherTask = Task {
             for await update in finder.search(identity, only: ids) {
                 guard !Task.isCancelled else { return }
+                app?.sources.record(update.providerID, update.status)
                 statuses[update.providerID] = update.status
                 guard !update.sources.isEmpty else { continue }
                 sources = rank(sources + update.sources)

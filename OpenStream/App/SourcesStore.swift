@@ -14,6 +14,19 @@ final class SourcesStore {
     private(set) var disabled: Set<String>
     private(set) var finder: StreamFinder
     private(set) var isRefreshing = false
+    /// How each source has done lately, kept between launches.
+    private(set) var health: [String: Health] = [:]
+
+    struct Health: Codable, Equatable {
+        var failuresInARow = 0
+        var lastFailure: Date?
+        var lastFound: Date?
+    }
+
+    /// Five failures in a row (errors, not "doesn't have it") rest a source for ten minutes, as
+    /// OpenStream for Android does, so a dead site stops slowing every search.
+    static let restAfter = 5
+    static let restFor: TimeInterval = 600
 
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private let catalogFile: URL
@@ -24,6 +37,7 @@ final class SourcesStore {
         static let disabled = "openstream.sources.disabled"
         static let enabledSeen = "openstream.sources.seen"
         static let refreshed = "openstream.sources.refreshedAt"
+        static let health = "openstream.sources.health"
     }
 
     init(folder: URL) {
@@ -36,6 +50,9 @@ final class SourcesStore {
         order = defaults.stringArray(forKey: Keys.order) ?? []
         disabled = Set(defaults.stringArray(forKey: Keys.disabled) ?? [])
         finder = StreamFinder(providers: [])
+        if let data = defaults.data(forKey: Keys.health), let saved = try? JSONDecoder().decode([String: Health].self, from: data) {
+            health = saved
+        }
         adoptNewEntries()
         rebuild()
     }
@@ -67,6 +84,41 @@ final class SourcesStore {
         order = ids
         defaults.set(order, forKey: Keys.order)
         rebuild()
+    }
+
+    var resting: Set<String> {
+        Set(health.filter { $0.value.failuresInARow >= Self.restAfter
+            && ($0.value.lastFailure.map { Date.now.timeIntervalSince($0) < Self.restFor } ?? false) }.map(\.key))
+    }
+
+    /// A search's answer from one source.
+    func record(_ providerID: String, _ status: SourceStatus) {
+        var entry = health[providerID] ?? Health()
+        switch status {
+        case .found:
+            entry.failuresInARow = 0
+            entry.lastFound = .now
+        case .failed:
+            entry.failuresInARow += 1
+            entry.lastFailure = .now
+        case .nothing:
+            // Answering without the title is a working source.
+            entry.failuresInARow = 0
+        default:
+            return
+        }
+        guard entry != health[providerID] else { return }
+        health[providerID] = entry
+        if let data = try? JSONEncoder().encode(health) { defaults.set(data, forKey: Keys.health) }
+    }
+
+    /// What the Sources page says about a source's recent record.
+    func summary(_ providerID: String) -> String? {
+        guard let entry = health[providerID] else { return nil }
+        if resting.contains(providerID) { return "Resting: failed \(entry.failuresInARow) times in a row" }
+        if entry.failuresInARow >= 2 { return "Failed the last \(entry.failuresInARow) times" }
+        if let found = entry.lastFound { return "Last found streams " + found.formatted(.relative(presentation: .named)) }
+        return nil
     }
 
     func name(of providerID: String) -> String {

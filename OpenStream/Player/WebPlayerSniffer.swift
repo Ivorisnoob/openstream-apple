@@ -201,6 +201,17 @@ private final class SniffSession: NSObject, WKScriptMessageHandler, WKNavigation
         pageLoaded = true
     }
 
+    #if DEBUG
+    /// Debug trace of every frame the page loads (OPENSTREAM_PROBE_TRACE).
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        if ProcessInfo.processInfo.environment["OPENSTREAM_PROBE_TRACE"] != nil {
+            let status = (navigationResponse.response as? HTTPURLResponse)?.statusCode ?? 0
+            FileHandle.standardError.write(Data("trace: frame \(navigationResponse.isForMainFrame ? "main" : "sub") \(status) \(navigationResponse.response.url?.absoluteString.prefix(160) ?? "")\n".utf8))
+        }
+        return .allow
+    }
+    #endif
+
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         nil
@@ -215,6 +226,16 @@ private final class SniffSession: NSObject, WKScriptMessageHandler, WKNavigation
     private static let script = """
     (function() {
       if (window.__openstream) return; window.__openstream = true;
+      // The page sits in a window nobody sees; players that wait for a visible tab, and frames
+      // that load lazily, would never start.
+      try {
+        Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+        Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
+        document.hasFocus = function() { return true; };
+      } catch (_) {}
+      new MutationObserver(function() {
+        document.querySelectorAll('iframe[loading="lazy"]').forEach(function(f) { f.loading = 'eager'; });
+      }).observe(document, { childList: true, subtree: true });
       const post = (data) => { try { data.frame = location.href; window.webkit.messageHandlers.openstream.postMessage(data); } catch (_) {} };
       const absolute = (u) => { try { return new URL(u, location.href).href; } catch (_) { return null; } };
       const open = XMLHttpRequest.prototype.open;

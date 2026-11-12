@@ -54,8 +54,10 @@ public final class StreamFinder: Sendable {
 
     /// Every source, the fallbacks only when needed. With `only`, just those sources, all at once:
     /// asked when every stream found so far has failed to play.
-    public func search(_ identity: MediaIdentity, only: Set<String>? = nil) -> AsyncStream<SearchUpdate> {
-        let providers = only.map { ids in self.providers.filter { ids.contains($0.id) }.map { $0.asking() } } ?? self.providers
+    /// `skipping` leaves out sources that are resting after failing again and again.
+    public func search(_ identity: MediaIdentity, only: Set<String>? = nil, skipping: Set<String> = []) -> AsyncStream<SearchUpdate> {
+        let providers = (only.map { ids in self.providers.filter { ids.contains($0.id) }.map { $0.asking() } } ?? self.providers)
+            .filter { !skipping.contains($0.id) }
         let cache = self.cache
         let key = only == nil ? cacheKey(identity) : cacheKey(identity) + "|more"
         return AsyncStream { continuation in

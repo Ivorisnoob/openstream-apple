@@ -71,6 +71,11 @@ private struct SourceRow: View {
                     Text([entry.kindLabel, entry.language].compactMap { $0 }.joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let summary = store.summary(entry.id) {
+                        Text(summary)
+                            .font(.caption)
+                            .foregroundStyle(store.resting.contains(entry.id) ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    }
                     if let description = entry.description, !description.isEmpty {
                         Text(description)
                             .font(.caption)
