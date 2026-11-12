@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import Observation
 import OpenStreamCore
+import os
 
 /// The one player of the app. Finds streams for a film or episode, plays the best one, moves on
 /// to the next if a stream fails, remembers where the viewer is, and lines up the next episode.
@@ -35,6 +36,17 @@ final class PlaybackModel {
     private(set) var countdown: Int?
     /// Bumped to ask the app to bring the player window forward.
     private(set) var windowRequests = 0
+    /// The picture is waiting for data: after a seek, or a slow stream.
+    private(set) var isBuffering = false
+    private(set) var bufferingSince: Date?
+    /// Every stream found failed, so the sources held back are being asked too.
+    private(set) var isLookingFurther = false
+    private(set) var subtitleOptions: [SubtitleOption] = []
+    private(set) var selectedSubtitle: SubtitleOption?
+    private(set) var isLoadingSubtitle = false
+    private(set) var subtitleError: String?
+    /// The subtitle line on screen now.
+    private(set) var cueText: String?
 
     @ObservationIgnored weak var app: AppModel?
     @ObservationIgnored private let tmdb: TMDB
@@ -52,6 +64,16 @@ final class PlaybackModel {
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var failObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var errorLogObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var controlObservation: NSKeyValueObservation?
+    @ObservationIgnored private var subtitleObserver: Any?
+    @ObservationIgnored private var bufferTask: Task<Void, Never>?
+    @ObservationIgnored private var furtherTask: Task<Void, Never>?
+    @ObservationIgnored private var subtitleTask: Task<Void, Never>?
+    @ObservationIgnored private var lookedFurther = false
+    @ObservationIgnored private var hardErrors = 0
+    @ObservationIgnored private var cues: [SubtitleCue] = []
+    @ObservationIgnored private var openSubtitles: [SubtitleOption] = []
 
     init(tmdb: TMDB, library: Library) {
         self.tmdb = tmdb
@@ -59,12 +81,15 @@ final class PlaybackModel {
         player.preventsDisplaySleepDuringVideoPlayback = true
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 2),
                                                       queue: .main, using: Self.tick(self))
+        subtitleObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 10),
+                                                          queue: .main, using: Self.subtitleTick(self))
+        controlObservation = player.observe(\.timeControlStatus, options: [.new], changeHandler: Self.controlChanged(self))
     }
 
     var isActive: Bool { phase != .idle }
 
     /// "S1, E3 · Pilot" for an episode.
-    var subtitle: String? {
+    var episodeLine: String? {
         guard let episode else { return nil }
         return "S\(episode.season), E\(episode.number) · \(episode.name)"
     }
@@ -99,7 +124,17 @@ final class PlaybackModel {
         saveProgress()
         tearDownItem()
         searchTask?.cancel()
+        furtherTask?.cancel()
+        subtitleTask?.cancel()
         countdownTask?.cancel()
+        lookedFurther = false
+        isLookingFurther = false
+        subtitleOptions = []
+        openSubtitles = []
+        selectedSubtitle = nil
+        subtitleError = nil
+        cues = []
+        cueText = nil
         self.title = title
         self.details = details?.ref == title.ref ? details : nil
         self.episode = nil
@@ -130,7 +165,9 @@ final class PlaybackModel {
                                              originalTitle: details.originalName, year: details.summary.year,
                                              season: self.episode?.season ?? 1, episode: self.episode?.number ?? 1)
                 self.identity = identity
+                Log.playback.notice("Start \(identity.key, privacy: .public) \(details.summary.name, privacy: .public)")
                 pendingSeek = library.resumeTime(title.ref, season: self.episode?.season, episode: self.episode?.number)
+                loadSubtitleOptions(identity)
                 await findSources(identity)
             } catch is CancellationError {
             } catch {
@@ -179,8 +216,13 @@ final class PlaybackModel {
         for await update in finder.search(identity) {
             guard !Task.isCancelled else { break }
             statuses[update.providerID] = update.status
+            if case .failed(let message) = update.status {
+                Log.playback.info("Source \(update.providerID, privacy: .public) failed: \(message, privacy: .public)")
+            }
             guard !update.sources.isEmpty else { continue }
+            Log.playback.notice("Source \(update.providerID, privacy: .public) found \(update.sources.count) streams")
             sources = rank(sources + update.sources)
+            refreshSubtitleOptions()
             schedulePick()
         }
         searching = false
@@ -213,10 +255,45 @@ final class PlaybackModel {
         }
         if let next = sources.first(where: { $0.isLikelyPlayable && !failedSources.contains($0.id) }) {
             choose(next)
-        } else if !searching {
-            phase = .failed(sources.isEmpty ? noStreams : "None of the streams found would play. Try another from the list.")
-        } else {
+        } else if searching {
             phase = .searching
+        } else if !lookedFurther, let identity, !skippedSources.isEmpty {
+            lookFurther(identity)
+        } else {
+            Log.playback.error("Nothing playable: \(self.sources.count) streams, \(self.failedSources.count) failed")
+            phase = .failed(sources.isEmpty ? noStreams : "None of the streams found would play. Try another from the list.")
+        }
+    }
+
+    /// Sources held back because others found streams first.
+    private var skippedSources: Set<String> {
+        Set(statuses.filter { $0.value == .skipped }.map(\.key))
+    }
+
+    /// Every stream found so far failed: ask the sources that were held back before giving up,
+    /// as a viewer would by trying another source.
+    private func lookFurther(_ identity: MediaIdentity) {
+        guard let finder = app?.sources.finder else { return }
+        let ids = skippedSources
+        lookedFurther = true
+        isLookingFurther = true
+        searching = true
+        phase = .searching
+        Log.playback.notice("Looking further: \(ids.count) more sources")
+        furtherTask = Task {
+            for await update in finder.search(identity, only: ids) {
+                guard !Task.isCancelled else { return }
+                statuses[update.providerID] = update.status
+                guard !update.sources.isEmpty else { continue }
+                Log.playback.notice("Source \(update.providerID, privacy: .public) found \(update.sources.count) streams")
+                sources = rank(sources + update.sources)
+                refreshSubtitleOptions()
+                if current == nil { pickBest() }
+            }
+            guard !Task.isCancelled else { return }
+            searching = false
+            isLookingFurther = false
+            if current == nil { pickBest() }
         }
     }
 
@@ -247,8 +324,13 @@ final class PlaybackModel {
                                                              queue: .main, using: Self.ended(self))
         failObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item,
                                                               queue: .main, using: Self.failedMidway(self, source: source))
+        errorLogObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.newErrorLogEntryNotification, object: item,
+                                                                  queue: .main, using: Self.errorLogged(self, source: source))
+        hardErrors = 0
+        Log.playback.notice("Play \(source.providerID, privacy: .public) \(source.quality.label, privacy: .public) \(source.container, privacy: .public) \(source.url.host() ?? "", privacy: .public)")
         player.replaceCurrentItem(with: item)
         player.play()
+        refreshSubtitleOptions()
 
         // A stream that hasn't started in 20 seconds is as good as broken.
         stallTask = Task {
@@ -260,6 +342,7 @@ final class PlaybackModel {
 
     private func sourceFailed(_ source: StreamSource) {
         guard current?.id == source.id else { return }
+        Log.playback.error("Stream failed: \(source.providerID, privacy: .public) \(source.url.host() ?? "", privacy: .public) \(self.player.currentItem?.error?.localizedDescription ?? "", privacy: .public)")
         // A stream that drops mid-film hands its place to the next one.
         let seconds = player.currentItem.map { CMTimeGetSeconds($0.currentTime()) } ?? 0
         if seconds.isFinite, seconds > 5 { pendingSeek = seconds }
@@ -334,10 +417,13 @@ final class PlaybackModel {
     func stop() {
         saveProgress()
         searchTask?.cancel()
+        furtherTask?.cancel()
+        subtitleTask?.cancel()
         pickTask?.cancel()
         pickTask = nil
         countdownTask?.cancel()
         tearDownItem()
+        cueText = nil
         phase = .idle
         current = nil
         showsUpNext = false
@@ -350,10 +436,138 @@ final class PlaybackModel {
         statusObservation = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
+        if let errorLogObserver { NotificationCenter.default.removeObserver(errorLogObserver) }
         endObserver = nil
         failObserver = nil
+        errorLogObserver = nil
+        bufferTask?.cancel()
+        isBuffering = false
+        bufferingSince = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
+    }
+
+    // MARK: Waiting for data
+
+    /// The spinner shows only when waiting lasts long enough to notice, so quick seeks stay calm.
+    private func controlStatusChanged(_ status: AVPlayer.TimeControlStatus, reason: AVPlayer.WaitingReason?) {
+        bufferTask?.cancel()
+        guard status == .waitingToPlayAtSpecifiedRate, reason != .noItemToPlay, phase == .playing else {
+            isBuffering = false
+            bufferingSince = nil
+            return
+        }
+        bufferTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            isBuffering = true
+            bufferingSince = .now
+            Log.playback.info("Waiting for data: \(reason?.rawValue ?? "", privacy: .public)")
+        }
+    }
+
+    /// The next stream, at the same spot: from the "slow" prompt.
+    func tryAnotherStream() {
+        guard let current else { return }
+        Log.playback.notice("Viewer moved on from a slow stream")
+        sourceFailed(current)
+    }
+
+    /// AVFoundation retries a missing segment every few seconds for a long time. Two hard HTTP
+    /// refusals (gone, forbidden) mean the stream is broken here: move on at once.
+    private func errorLogged(_ item: AVPlayerItem, source: StreamSource) {
+        guard let event = item.errorLog()?.events.last, current?.id == source.id else { return }
+        let comment = event.errorComment ?? ""
+        Log.playback.error("Stream error \(event.errorStatusCode) \(comment, privacy: .public) on \(source.providerID, privacy: .public)")
+        let http = comment.firstMatch(of: /HTTP (\d{3})/).flatMap { Int($0.1) }
+        guard let http, [401, 403, 404, 410].contains(http) else { return }
+        hardErrors += 1
+        if hardErrors >= 2 { sourceFailed(source) }
+    }
+
+    // MARK: Subtitles
+
+    private func loadSubtitleOptions(_ identity: MediaIdentity) {
+        let preferred = [Locale.current.language.languageCode?.identifier].compactMap { $0 }
+        subtitleTask = Task {
+            let found = await OpenSubtitles.search(identity, preferred: preferred)
+            guard !Task.isCancelled else { return }
+            Log.playback.info("OpenSubtitles: \(found.count) files")
+            openSubtitles = found
+            refreshSubtitleOptions()
+        }
+    }
+
+    /// The playing stream's own files first (timed for it), then other sources', then OpenSubtitles.
+    private func refreshSubtitleOptions() {
+        var seen = Set<URL>()
+        func options(_ source: StreamSource) -> [SubtitleOption] {
+            source.subtitles.map { subtitle in
+                SubtitleOption(id: "\(source.providerID)-\(subtitle.url.absoluteString)", url: subtitle.url,
+                               language: Subtitles.languageName(subtitle.language) ?? subtitle.label,
+                               languageCode: subtitle.language, origin: source.providerName,
+                               headers: source.headers.filter { $0.key != "Range" })
+            }
+        }
+        let own = current.map(options) ?? []
+        let others = sources.filter { $0.id != current?.id }.flatMap(options)
+        subtitleOptions = (own + others + openSubtitles).filter { seen.insert($0.url).inserted }
+        autoSelectSubtitle()
+    }
+
+    /// Subtitles come back on in the language last chosen.
+    private func autoSelectSubtitle() {
+        guard selectedSubtitle == nil, !isLoadingSubtitle, let language = app?.settings.subtitleLanguage,
+              let option = subtitleOptions.first(where: { ($0.languageCode ?? $0.language) == language })
+        else { return }
+        load(option)
+    }
+
+    /// The viewer's pick; nil turns subtitles off, and both are remembered for next time.
+    func selectSubtitle(_ option: SubtitleOption?) {
+        app?.settings.subtitleLanguage = option.map { $0.languageCode ?? $0.language }
+        guard let option else {
+            subtitleTask?.cancel()
+            selectedSubtitle = nil
+            cues = []
+            cueText = nil
+            isLoadingSubtitle = false
+            return
+        }
+        load(option)
+    }
+
+    private func load(_ option: SubtitleOption) {
+        selectedSubtitle = option
+        isLoadingSubtitle = true
+        subtitleError = nil
+        cues = []
+        cueText = nil
+        Task {
+            do {
+                let loaded = try await Subtitles.load(option)
+                guard selectedSubtitle?.id == option.id else { return }
+                cues = loaded
+                Log.playback.info("Subtitles: \(loaded.count) lines from \(option.origin, privacy: .public)")
+            } catch {
+                guard selectedSubtitle?.id == option.id else { return }
+                subtitleError = "These subtitles couldn't be loaded."
+                Log.playback.error("Subtitles failed: \(option.url.host() ?? "", privacy: .public)")
+            }
+            if selectedSubtitle?.id == option.id { isLoadingSubtitle = false }
+        }
+    }
+
+    private func updateCue(at seconds: Double) {
+        guard !cues.isEmpty else { return }
+        // The last line starting at or before now, if it hasn't ended.
+        var low = 0, high = cues.count - 1, found: Int?
+        while low <= high {
+            let mid = (low + high) / 2
+            if cues[mid].start <= seconds { found = mid; low = mid + 1 } else { high = mid - 1 }
+        }
+        let text = found.flatMap { cues[$0].end > seconds ? cues[$0].text : nil }
+        if text != cueText { cueText = text }
     }
 
     // MARK: Callbacks
@@ -391,6 +605,28 @@ final class PlaybackModel {
                     break
                 }
             }
+        }
+    }
+
+    private nonisolated static func subtitleTick(_ model: PlaybackModel) -> @Sendable (CMTime) -> Void {
+        { [weak model] time in
+            MainActor.assumeIsolated { model?.updateCue(at: CMTimeGetSeconds(time)) }
+        }
+    }
+
+    private nonisolated static func controlChanged(_ model: PlaybackModel)
+        -> @Sendable (AVPlayer, NSKeyValueObservedChange<AVPlayer.TimeControlStatus>) -> Void {
+        { [weak model] player, _ in
+            let status = player.timeControlStatus
+            let reason = player.reasonForWaitingToPlay
+            Task { @MainActor in model?.controlStatusChanged(status, reason: reason) }
+        }
+    }
+
+    private nonisolated static func errorLogged(_ model: PlaybackModel, source: StreamSource) -> @Sendable (Notification) -> Void {
+        { [weak model] notification in
+            guard let item = notification.object as? AVPlayerItem else { return }
+            MainActor.assumeIsolated { model?.errorLogged(item, source: source) }
         }
     }
 

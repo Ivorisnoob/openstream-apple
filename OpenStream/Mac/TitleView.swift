@@ -121,8 +121,9 @@ private struct TitleHeader: View {
     private var height: CGFloat { min(max(width * 0.48, 420), 680) }
 
     var body: some View {
+        // The dimming is part of what extends under the sidebar, so the picture and its shade
+        // continue there together instead of meeting at a seam.
         Artwork(path: summary.backdropPath ?? model.summary.backdropPath, kind: .backdrop, width: width)
-            .backgroundExtensionEffect()
             .frame(height: height)
             .frame(maxWidth: .infinity)
             .overlay {
@@ -130,6 +131,7 @@ private struct TitleHeader: View {
                                startPoint: .bottomLeading, endPoint: .topTrailing)
                 LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .bottom, endPoint: .center)
             }
+            .backgroundExtensionEffect()
             .overlay(alignment: .bottomLeading) { info }
             .environment(\.colorScheme, .dark)
     }

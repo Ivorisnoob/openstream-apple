@@ -7,6 +7,8 @@ public enum SourceStatus: Hashable, Sendable {
     case found(Int)
     case nothing
     case failed(String)
+    /// A fallback source that wasn't asked because the others found streams.
+    case skipped
 
     public var isDone: Bool {
         switch self {
@@ -50,10 +52,12 @@ public final class StreamFinder: Sendable {
         await cache.remove(cacheKey(identity))
     }
 
-    public func search(_ identity: MediaIdentity) -> AsyncStream<SearchUpdate> {
-        let providers = self.providers
+    /// Every source, the fallbacks only when needed. With `only`, just those sources, all at once:
+    /// asked when every stream found so far has failed to play.
+    public func search(_ identity: MediaIdentity, only: Set<String>? = nil) -> AsyncStream<SearchUpdate> {
+        let providers = only.map { ids in self.providers.filter { ids.contains($0.id) }.map { $0.asking() } } ?? self.providers
         let cache = self.cache
-        let key = cacheKey(identity)
+        let key = only == nil ? cacheKey(identity) : cacheKey(identity) + "|more"
         return AsyncStream { continuation in
             let task = Task {
                 let direct = providers.filter { !$0.isFallback }
@@ -100,7 +104,7 @@ public final class StreamFinder: Sendable {
                     }
                     if !startedFallback {
                         for provider in fallback {
-                            continuation.yield(SearchUpdate(providerID: provider.id, status: .nothing, sources: []))
+                            continuation.yield(SearchUpdate(providerID: provider.id, status: .skipped, sources: []))
                         }
                     }
                 }
@@ -117,7 +121,7 @@ public final class StreamFinder: Sendable {
                 do { return .success(try await provider.resolve(identity)) } catch { return .failure(error) }
             }
             group.addTask {
-                try? await Task.sleep(for: provider.isFallback ? fallbackLimit : perSourceLimit)
+                try? await Task.sleep(for: provider.isFallback || provider is Asked ? fallbackLimit : perSourceLimit)
                 return nil
             }
             let first = await group.next() ?? nil
@@ -153,6 +157,19 @@ public final class StreamFinder: Sendable {
             return a.offset < b.offset
         }.map(\.element)
     }
+}
+
+/// A provider asked directly, not held back as a fallback.
+private struct Asked: StreamProvider {
+    let base: any StreamProvider
+    var id: String { base.id }
+    var name: String { base.name }
+    var isFallback: Bool { false }
+    func resolve(_ identity: MediaIdentity) async throws -> [StreamSource] { try await base.resolve(identity) }
+}
+
+extension StreamProvider {
+    func asking() -> any StreamProvider { Asked(base: self) }
 }
 
 actor ResolvedStreamCache {

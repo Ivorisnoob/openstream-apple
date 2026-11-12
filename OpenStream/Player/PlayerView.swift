@@ -21,6 +21,11 @@ struct PlayerView: View {
             Color.black
             VideoSurface(player: playback.player)
                 .opacity(playback.phase == .playing ? 1 : 0)
+            if playback.phase == .playing {
+                SubtitleText()
+                    .allowsHitTesting(false)
+                BufferingIndicator()
+            }
             if playback.phase != .playing {
                 StatusOverlay(showsSources: { inspectorTab = .sources; showsInspector = true })
                     .transition(.opacity)
@@ -39,6 +44,9 @@ struct PlayerView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                SubtitleMenu()
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     showsInspector.toggle()
                 } label: {
@@ -49,7 +57,7 @@ struct PlayerView: View {
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .navigationTitle(playback.title?.name ?? "OpenStream")
-        .navigationSubtitle(playback.subtitle ?? "")
+        .navigationSubtitle(playback.episodeLine ?? "")
         .preferredColorScheme(.dark)
         .frame(minWidth: 640, minHeight: 360)
         .onDisappear { playback.stop() }
@@ -97,7 +105,7 @@ private struct StatusOverlay: View {
                 if let title = playback.title {
                     TitleLogo(title: title, details: playback.details, maxWidth: 380, maxHeight: 110)
                 }
-                if let subtitle = playback.subtitle {
+                if let subtitle = playback.episodeLine {
                     Text(subtitle)
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.white.opacity(0.8))
@@ -158,9 +166,104 @@ private struct StatusOverlay: View {
         default:
             let total = playback.statuses.count
             let done = playback.statuses.values.filter(\.isDone).count
+            if playback.isLookingFurther { return "Those streams didn't play. Asking more sources…" }
             if playback.sources.isEmpty { return "Looking for streams… \(done) of \(total) sources checked" }
             return "Found \(playback.sources.count) streams, picking the best…"
         }
+    }
+}
+
+/// While the picture waits for data: a spinner, then after ten seconds a way out, so a frozen
+/// frame never leaves the viewer guessing.
+private struct BufferingIndicator: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let playback = app.playback
+        if playback.isBuffering, let since = playback.bufferingSince {
+            TimelineView(.periodic(from: since, by: 1)) { context in
+                let slow = context.date.timeIntervalSince(since) >= 10
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                    if slow {
+                        Text("This stream is slow to load.")
+                            .font(.callout.weight(.medium))
+                        Button("Try Another Stream") { playback.tryAnotherStream() }
+                            .buttonStyle(.glass)
+                            .controlSize(.large)
+                    }
+                }
+                .padding(slow ? 22 : 18)
+                .glassEffect(.regular, in: .rect(cornerRadius: slow ? 22 : 40))
+                .animation(.smooth, value: slow)
+            }
+            .transition(.opacity)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Loading")
+        }
+    }
+}
+
+/// The chosen subtitles over the picture, sized to it, in the plain white-on-dark style the
+/// system uses for captions.
+private struct SubtitleText: View {
+    @Environment(AppModel.self) private var app
+    @State private var height: CGFloat = 600
+
+    var body: some View {
+        Color.clear
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+            .overlay(alignment: .bottom) {
+                if let text = app.playback.cueText {
+                    Text(text)
+                        .font(.system(size: max(16, height * 0.042), weight: .medium))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(.black.opacity(0.55), in: .rect(cornerRadius: 6))
+                        .padding(.horizontal, 40)
+                        .padding(.bottom, height * 0.09)
+                        .accessibilityAddTraits(.updatesFrequently)
+                }
+            }
+    }
+}
+
+/// Subtitles: Off, then each language with its files, the playing stream's own first.
+private struct SubtitleMenu: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let playback = app.playback
+        let options = playback.subtitleOptions
+        let languages = options.reduce(into: [String]()) { if !$0.contains($1.language) { $0.append($1.language) } }
+        Menu {
+            Toggle("Off", isOn: Binding { playback.selectedSubtitle == nil } set: { if $0 { playback.selectSubtitle(nil) } })
+            if options.isEmpty {
+                Text(playback.isActive ? "Looking for subtitles…" : "No subtitles")
+            }
+            ForEach(languages, id: \.self) { language in
+                let files = options.filter { $0.language == language }
+                Section(language) {
+                    ForEach(files) { option in
+                        Toggle(isOn: Binding { playback.selectedSubtitle?.id == option.id } set: { if $0 { playback.selectSubtitle(option) } }) {
+                            Text(title(option))
+                            if let release = option.release, !release.isEmpty { Text(release) }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Subtitles", systemImage: playback.selectedSubtitle == nil ? "captions.bubble" : "captions.bubble.fill")
+        }
+        .help(playback.subtitleError ?? (playback.isLoadingSubtitle ? "Loading subtitles…" : "Subtitles"))
+    }
+
+    private func title(_ option: SubtitleOption) -> String {
+        option.isHearingImpaired ? "\(option.origin) · SDH" : option.origin
     }
 }
 
@@ -298,7 +401,7 @@ private struct SourceList: View {
     private func reason(_ status: SourceStatus?) -> String {
         switch status {
         case .failed(let message): message
-        case .waiting: "Not needed"
+        case .waiting, .skipped: "Not needed"
         default: "Nothing found"
         }
     }

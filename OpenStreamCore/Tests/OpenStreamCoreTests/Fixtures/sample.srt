@@ -1,0 +1,13 @@
+1
+00:00:01,000 --> 00:00:03,500
+<i>Hello</i> there
+General Kenobi
+
+2
+00:00:04,000 --> 00:00:05,000
+Support us and become VIP member
+to remove all ads from www.OpenSubtitles.org
+
+3
+00:01:02,250 --> 00:01:04,000
+Second {\an8}line

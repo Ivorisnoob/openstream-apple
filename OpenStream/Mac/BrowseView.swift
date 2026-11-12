@@ -191,13 +191,14 @@ private struct HeroSlide: View {
     var body: some View {
         NavigationLink(value: Route.title(title)) {
             Artwork(path: title.backdropPath, kind: .backdrop, width: width)
-                .backgroundExtensionEffect()
                 .overlay {
-                    // Darker towards the text, so it reads over any picture.
+                    // Darker towards the text, so it reads over any picture; inside the extension
+                    // under the sidebar, so the shade has no edge there.
                     LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.35), .clear],
                                    startPoint: .bottomLeading, endPoint: .center)
                     LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .bottom, endPoint: .center)
                 }
+                .backgroundExtensionEffect()
         }
         .buttonStyle(.plain)
         .overlay(alignment: .bottomLeading) {

@@ -207,3 +207,34 @@ struct LibraryTests {
         #expect(Library(file: file).isInWatchlist(show.ref))
     }
 }
+
+@Suite("Subtitles")
+struct SubtitleTests {
+    private func file(_ name: String, _ ext: String) throws -> Data {
+        let url = try #require(Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "Fixtures"))
+        return try Data(contentsOf: url)
+    }
+
+    @Test func parsesSubRipWithoutTagsOrAds() throws {
+        let cues = Subtitles.parse(Subtitles.text(try file("sample", "srt")))
+        #expect(cues.count == 2)
+        #expect(cues[0].start == 1 && cues[0].end == 3.5)
+        #expect(cues[0].text == "Hello there\nGeneral Kenobi")
+        #expect(cues[1].start == 62.25)
+        #expect(cues[1].text == "Second line")
+    }
+
+    @Test func gunzipsOpenSubtitlesFiles() throws {
+        let zipped = try file("sample.srt", "gz")
+        let plain = try file("sample", "srt")
+        #expect(Subtitles.gunzipIfNeeded(zipped) == plain)
+        #expect(Subtitles.gunzipIfNeeded(plain) == plain)
+    }
+
+    @Test func parsesWebVTT() {
+        let vtt = "WEBVTT\n\n00:01.000 --> 00:02.000 align:start\nHi\n\nNOTE skip me\n\n01:00:00.500 --> 01:00:01.000\n<c.yellow>Late</c>\n"
+        let cues = Subtitles.parse(vtt)
+        #expect(cues.map(\.text) == ["Hi", "Late"])
+        #expect(cues[1].start == 3600.5)
+    }
+}
