@@ -349,3 +349,35 @@ struct DashTests {
         #expect(Array(DashToHLS.retagHEVC(data)[4..<8]) == Array("hvc1".utf8))
     }
 }
+
+@Suite("Skip times")
+struct SkipTimeTests {
+    @Test func readsAniSkip() throws {
+        let url = try #require(Bundle.module.url(forResource: "aniskip", withExtension: "json", subdirectory: "Fixtures"))
+        let segments = SkipTimes.parse(try Data(contentsOf: url))
+        #expect(segments.contains { $0.kind == .intro && $0.end > $0.start })
+        #expect(segments.contains { $0.kind == .credits })
+    }
+
+    @Test func picksTheSubmissionTimedOnTheClosestLength() {
+        let segments = [
+            SkipSegment(kind: .intro, start: 10, end: 100, episodeLength: 1300),
+            SkipSegment(kind: .intro, start: 20, end: 110, episodeLength: 1440),
+            SkipSegment(kind: .credits, start: 1350, end: 1430, episodeLength: 1440),
+        ]
+        let best = SkipTimes.best(segments, duration: 1442)
+        #expect(best.map(\.kind) == [.intro, .credits])
+        #expect(best.first?.start == 20)
+    }
+
+    /// Live services; runs only when asked: OPENSTREAM_LIVE=1 swift test --filter mapsFrieren
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENSTREAM_LIVE"] != nil))
+    func mapsFrieren() async {
+        let identity = MediaIdentity(ref: TitleRef(kind: .tv, id: 209867), imdbID: nil, title: "Frieren", year: 2023, season: 1, episode: 5)
+        let ref = await AnimeEpisodeMapper.shared.map(identity, airDate: nil)
+        #expect(ref?.malID == 52991)
+        #expect(ref?.episode == 5)
+        let segments = await SkipTimes.segments(malID: 52991, episode: 5)
+        #expect(!segments.isEmpty)
+    }
+}

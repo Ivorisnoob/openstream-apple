@@ -35,6 +35,11 @@ struct PlayerView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
+            SkipButton()
+                .padding(.trailing, 28)
+                .padding(.bottom, 110)
+        }
+        .overlay(alignment: .bottomTrailing) {
             UpNextCard()
                 .padding(.trailing, 28)
                 .padding(.bottom, 96)
@@ -347,6 +352,39 @@ private struct SubtitleMenu: View {
 
     private func title(_ option: SubtitleOption) -> String {
         option.isHearingImpaired ? "\(option.origin) · SDH" : option.origin
+    }
+}
+
+/// "Skip Intro" while one plays, as streaming apps put it: bottom corner, above the controls.
+/// Credits are left to Up Next when there's a next episode.
+private struct SkipButton: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let playback = app.playback
+        if let segment = playback.activeSkip, playback.countdown == nil,
+           !(segment.kind == .credits && playback.nextEpisode != nil) {
+            Button {
+                playback.skip(segment)
+            } label: {
+                Label(title(segment.kind), systemImage: "forward.end.fill")
+                    .font(.headline)
+                    .padding(.horizontal, 6)
+            }
+            .buttonStyle(.glass)
+            .controlSize(.extraLarge)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+            .animation(.smooth, value: segment)
+            .keyboardShortcut("s", modifiers: [])
+        }
+    }
+
+    private func title(_ kind: SkipSegment.Kind) -> String {
+        switch kind {
+        case .intro: "Skip Intro"
+        case .recap: "Skip Recap"
+        case .credits: "Skip Credits"
+        }
     }
 }
 

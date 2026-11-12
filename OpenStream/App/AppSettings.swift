@@ -53,6 +53,8 @@ final class AppSettings {
     /// The next episode starts by itself when one ends.
     var autoplaysNextEpisode: Bool { didSet { save(autoplaysNextEpisode, Keys.autoplay) } }
     var nextEpisodeCountdown: Int { didSet { save(nextEpisodeCountdown, Keys.countdown) } }
+    /// Intros and recaps are skipped without asking (anime with known times).
+    var skipsIntros: Bool { didSet { save(skipsIntros, Keys.skipIntros) } }
     /// 0 = as good as the stream and connection allow.
     var maxQuality: Int { didSet { save(maxQuality, Keys.maxQuality) } }
     var audioPreference: AudioPreference { didSet { save(audioPreference.rawValue, Keys.audio) } }
@@ -147,6 +149,7 @@ final class AppSettings {
         static let resume = "openstream.player.resume"
         static let autoplay = "openstream.player.autoplayNext"
         static let countdown = "openstream.player.countdown"
+        static let skipIntros = "openstream.player.skipIntros"
         static let maxQuality = "openstream.player.maxQuality"
         static let audio = "openstream.player.audio"
         static let audioLanguage = "openstream.player.audioLanguage"
@@ -170,6 +173,7 @@ final class AppSettings {
         resumesPlayback = defaults.bool(forKey: Keys.resume)
         autoplaysNextEpisode = defaults.bool(forKey: Keys.autoplay)
         nextEpisodeCountdown = defaults.integer(forKey: Keys.countdown)
+        skipsIntros = defaults.bool(forKey: Keys.skipIntros)
         maxQuality = defaults.integer(forKey: Keys.maxQuality)
         audioPreference = AudioPreference(rawValue: defaults.string(forKey: Keys.audio) ?? "") ?? .any
         audioLanguage = defaults.string(forKey: Keys.audioLanguage)
@@ -198,6 +202,7 @@ final class AppSettings {
         resumesPlayback = fresh.resumesPlayback
         autoplaysNextEpisode = fresh.autoplaysNextEpisode
         nextEpisodeCountdown = fresh.nextEpisodeCountdown
+        skipsIntros = fresh.skipsIntros
         maxQuality = fresh.maxQuality
         audioPreference = fresh.audioPreference
         audioLanguage = fresh.audioLanguage

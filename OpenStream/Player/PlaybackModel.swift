@@ -47,6 +47,8 @@ final class PlaybackModel {
     private(set) var subtitleError: String?
     /// The subtitle line on screen now.
     private(set) var cueText: String?
+    /// The intro, recap or credits playing now, when its times are known.
+    private(set) var activeSkip: SkipSegment?
     /// The playing stream's own audio tracks, when it has a choice of them.
     private(set) var audioTracks: [AVMediaSelectionOption] = []
     private(set) var selectedAudioTrack: AVMediaSelectionOption?
@@ -77,6 +79,9 @@ final class PlaybackModel {
     @ObservationIgnored private var hardErrors = 0
     @ObservationIgnored private var cues: [SubtitleCue] = []
     @ObservationIgnored private var audibleGroup: AVMediaSelectionGroup?
+    @ObservationIgnored private var skipTimes: [SkipSegment] = []
+    @ObservationIgnored private var skipTask: Task<Void, Never>?
+    @ObservationIgnored private var autoSkipped: Set<SkipSegment.Kind> = []
     /// Search Again asks every source, not the one remembered for this title.
     @ObservationIgnored private var searchesEverywhere = false
     /// Seconds the current stream has really played, by the clock (time observers also fire on
@@ -140,6 +145,10 @@ final class PlaybackModel {
         countdownTask?.cancel()
         lookedFurther = false
         isLookingFurther = false
+        skipTask?.cancel()
+        skipTimes = []
+        activeSkip = nil
+        autoSkipped = []
         isLookingForMore = false
         subtitleOptions = []
         openSubtitles = []
@@ -181,6 +190,7 @@ final class PlaybackModel {
                 pendingSeek = app?.settings.resumesPlayback == false ? nil
                     : library.resumeTime(title.ref, season: self.episode?.season, episode: self.episode?.number)
                 loadSubtitleOptions(identity)
+                loadSkipTimes(identity, details: details)
                 await findSources(identity)
             } catch is CancellationError {
             } catch {
@@ -462,8 +472,17 @@ final class PlaybackModel {
                 Log.playback.info("Remembered \(current.providerID, privacy: .public) for \(title.ref.description, privacy: .public)")
             }
         }
+        let segments = SkipTimes.best(skipTimes, duration: duration)
+        let active = segments.first { seconds >= $0.start && seconds < $0.end - 2 }
+        if active != activeSkip { activeSkip = active }
+        if let active, active.kind != .credits, app?.settings.skipsIntros == true, !autoSkipped.contains(active.kind) {
+            autoSkipped.insert(active.kind)
+            skip(active)
+        }
         let remaining = duration - seconds
-        let nearEnd = nextEpisode != nil && remaining < max(45, duration * 0.03)
+        // Up Next comes up when the credits start, when they're known; else near the end.
+        let inCredits = active?.kind == .credits
+        let nearEnd = nextEpisode != nil && (inCredits || remaining < max(45, duration * 0.03))
         if nearEnd != showsUpNext { showsUpNext = nearEnd }
         if !finishedThisItem, seconds / duration >= Library.finishedFraction {
             finishedThisItem = true
@@ -574,6 +593,29 @@ final class PlaybackModel {
         guard let http, [401, 403, 404, 410].contains(http) else { return }
         hardErrors += 1
         if hardErrors >= 2 { sourceFailed(source) }
+    }
+
+    // MARK: Skipping
+
+    /// AniSkip's times, for anime only: the episode is mapped to its MyAnimeList entry first.
+    private func loadSkipTimes(_ identity: MediaIdentity, details: TitleDetails) {
+        let isAnime = details.summary.originalLanguage == "ja" && details.genres.contains { $0.id == 16 }
+        guard isAnime else { return }
+        let airDate = episode?.airDate
+        skipTask = Task {
+            guard let ref = await AnimeEpisodeMapper.shared.map(identity, airDate: airDate), let malID = ref.malID else { return }
+            let found = await SkipTimes.segments(malID: malID, episode: identity.ref.kind == .movie ? 1 : ref.episode)
+            guard !Task.isCancelled else { return }
+            skipTimes = found
+            Log.playback.info("Skip times: \(found.map(\.kind.rawValue).joined(separator: ", "), privacy: .public) (MAL \(malID) ep \(ref.episode))")
+        }
+    }
+
+    func skip(_ segment: SkipSegment) {
+        Log.playback.info("Skipping \(segment.kind.rawValue, privacy: .public)")
+        activeSkip = nil
+        let target = segment.end
+        Task { await player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) }
     }
 
     // MARK: Audio

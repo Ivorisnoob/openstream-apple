@@ -105,6 +105,10 @@ private struct PlaybackSettings: View {
                 Text("A lower quality uses less data and starts sooner on a slow connection. Streams and tracks in your audio language are picked first; the Audio button in the player sets it too.")
             }
             Section("Episodes") {
+                Toggle(isOn: $settings.skipsIntros) {
+                    Text("Skip intros and recaps automatically")
+                    Text("For anime, where the times are known. A Skip button shows either way.")
+                }
                 Toggle("Play the next episode automatically", isOn: $settings.autoplaysNextEpisode)
                 Picker("Countdown", selection: $settings.nextEpisodeCountdown) {
                     ForEach([3, 5, 10, 15], id: \.self) { Text("\($0) seconds").tag($0) }
