@@ -397,3 +397,32 @@ struct SkipTimeTests {
         #expect(!segments.isEmpty)
     }
 }
+
+@Suite("HLS repair")
+struct HLSMasterTests {
+    let base = URL(string: "https://cdn.example/anime/abc/master.m3u8")!
+
+    @Test func dropsDeadIFramePlaylistsAndMakesURIsAbsolute() throws {
+        let master = """
+        #EXTM3U
+        #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2242960,RESOLUTION=1920x1080,CODECS="avc1.640032,mp4a.40.2"
+        index-f1-v1-a1.m3u8
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=41517,RESOLUTION=640x360,URI="iframes-f3-v1-a1.m3u8"
+        """
+        let cleaned = try #require(HLSMaster.clean(master, base: base))
+        #expect(!cleaned.contains("I-FRAME"))
+        #expect(cleaned.contains("https://cdn.example/anime/abc/index-f1-v1-a1.m3u8"))
+    }
+
+    @Test func removesUndefinedAudioGroups() throws {
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5557000,RESOLUTION=1920x1080,NAME=\"1080p\",AUDIO=\"audio\"\nhttps://x/playlist.jpg"
+        let cleaned = try #require(HLSMaster.clean(master, base: base))
+        #expect(!cleaned.contains("AUDIO="))
+    }
+
+    @Test func leavesGoodPlaylistsAlone() {
+        let master = "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",URI=\"a.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nv.m3u8"
+        #expect(HLSMaster.clean(master, base: base) == nil)
+        #expect(HLSMaster.clean("#EXTM3U\n#EXTINF:4,\nseg.ts", base: base) == nil)
+    }
+}

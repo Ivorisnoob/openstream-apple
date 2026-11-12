@@ -6,6 +6,7 @@ import OpenStreamCore
 nonisolated enum StreamAssets {
     static func asset(for source: StreamSource) async throws -> AVURLAsset {
         if source.isDASH { return try await DashGateway.shared.asset(for: source) }
+        if source.isHLS, let repaired = await DashGateway.shared.repairedAsset(for: source) { return repaired }
         return AVURLAsset(url: source.url, options: options(for: source.headers, url: source.url))
     }
 
@@ -46,7 +47,9 @@ nonisolated final class DashGateway: NSObject, AVAssetResourceLoaderDelegate, @u
     static let scheme = "openstream-dash"
 
     private struct Entry {
-        var manifest: DashManifest
+        var manifest: DashManifest?
+        /// A repaired HLS master playlist, served as is.
+        var master: String?
         var headers: [String: String]
     }
 
@@ -66,10 +69,31 @@ nonisolated final class DashGateway: NSObject, AVAssetResourceLoaderDelegate, @u
         lock.withLock {
             // Only the last few streams are kept; each one is a whole film's segment list.
             if entries.count > 8 { entries.removeAll() }
-            entries[id] = Entry(manifest: manifest, headers: source.headers)
+            entries[id] = Entry(manifest: manifest, master: nil, headers: source.headers)
         }
         let master = URL(string: "\(Self.scheme)://\(id)/master.m3u8")!
         let asset = AVURLAsset(url: master, options: StreamAssets.options(for: source.headers, url: source.url))
+        asset.resourceLoader.setDelegate(self, queue: queue)
+        return asset
+    }
+
+    /// An HLS stream whose master playlist needs repair (see `HLSMaster`) is served from here;
+    /// nil means it's fine, or couldn't be read, and should be opened directly.
+    func repairedAsset(for source: StreamSource) async -> AVURLAsset? {
+        var request = URLRequest(url: source.url, timeoutInterval: 8)
+        source.headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
+              data.count < 2_000_000,
+              let master = HLSMaster.clean(String(decoding: data, as: UTF8.self), base: response.url ?? source.url)
+        else { return nil }
+        let id = UUID().uuidString.lowercased()
+        lock.withLock {
+            if entries.count > 8 { entries.removeAll() }
+            entries[id] = Entry(manifest: nil, master: master, headers: source.headers)
+        }
+        let asset = AVURLAsset(url: URL(string: "\(Self.scheme)://\(id)/master.m3u8")!,
+                               options: StreamAssets.options(for: source.headers, url: source.url))
         asset.resourceLoader.setDelegate(self, queue: queue)
         return asset
     }
@@ -80,17 +104,22 @@ nonisolated final class DashGateway: NSObject, AVAssetResourceLoaderDelegate, @u
               let entry = lock.withLock({ entries[id] })
         else { return false }
         let parts = url.path.split(separator: "/").map(String.init)
+        if parts == ["master.m3u8"], let master = entry.master {
+            respond(loadingRequest, Data(master.utf8), type: "public.m3u-playlist")
+            return true
+        }
+        guard let manifest = entry.manifest else { return false }
         if parts == ["master.m3u8"] {
-            respond(loadingRequest, Data(DashToHLS.master(entry.manifest, scheme: Self.scheme, id: id).utf8), type: "public.m3u-playlist")
+            respond(loadingRequest, Data(DashToHLS.master(manifest, scheme: Self.scheme, id: id).utf8), type: "public.m3u-playlist")
             return true
         }
         if parts.count == 1, parts[0].hasSuffix(".m3u8"),
-           let representation = entry.manifest.representations.first(where: { $0.id + ".m3u8" == parts[0] }) {
+           let representation = manifest.representations.first(where: { $0.id + ".m3u8" == parts[0] }) {
             respond(loadingRequest, Data(DashToHLS.media(representation, scheme: Self.scheme, id: id).utf8), type: "public.m3u-playlist")
             return true
         }
         if parts.count == 2, parts[1] == "init.mp4",
-           let representation = entry.manifest.representations.first(where: { $0.id == parts[0] }) {
+           let representation = manifest.representations.first(where: { $0.id == parts[0] }) {
             var request = URLRequest(url: representation.initialization, timeoutInterval: 15)
             entry.headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
             let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in

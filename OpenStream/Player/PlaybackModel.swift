@@ -596,6 +596,13 @@ final class PlaybackModel {
         Log.playback.error("Stream error \(event.errorStatusCode) \(comment, privacy: .public) on \(source.providerID, privacy: .public)")
         let http = comment.firstMatch(of: /HTTP (\d{3})/).flatMap { Int($0.1) }
         guard let http, [401, 403, 404, 410].contains(http) else { return }
+        // Only a stream that's stuck counts: a missing side file (a trick-play playlist used
+        // for scrubbing) mustn't switch away from a picture that keeps playing.
+        let uri = event.uri ?? ""
+        guard player.timeControlStatus != .playing, !uri.lowercased().contains("iframe") else {
+            Log.playback.info("Ignored \(http) while playing: \(uri.suffix(60), privacy: .public)")
+            return
+        }
         hardErrors += 1
         if hardErrors >= 2 { sourceFailed(source) }
     }

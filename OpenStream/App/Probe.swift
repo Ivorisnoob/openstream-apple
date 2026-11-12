@@ -92,9 +92,29 @@ enum Probe {
             let seconds = CMTimeGetSeconds(item.currentTime())
             if item.status == .readyToPlay, seconds > 1.5 {
                 let size = item.presentationSize
+                // Seek halfway and see that it gets there and plays on.
+                let duration = CMTimeGetSeconds(item.duration)
+                var seekResult = "no seek"
+                if duration.isFinite, duration > 120 {
+                    let target = duration / 2
+                    let started = Date.now
+                    _ = await player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+                    seekResult = "seek stuck"
+                    for _ in 0..<40 {
+                        try? await Task.sleep(for: .milliseconds(500))
+                        let now = CMTimeGetSeconds(item.currentTime())
+                        if item.status == .failed { seekResult = "seek failed: \(item.error?.localizedDescription ?? "")"; break }
+                        if now > target + 1 {
+                            seekResult = "seek ok in \(Date.now.timeIntervalSince(started).formatted(.number.precision(.fractionLength(1))))s"
+                            break
+                        }
+                    }
+                    let errors = item.errorLog()?.events.compactMap { $0.errorComment } ?? []
+                    if !errors.isEmpty { seekResult += " (errors: \(Set(errors).joined(separator: "; ").prefix(120)))" }
+                }
                 player.pause()
                 let audio = (try? await asset.loadMediaSelectionGroup(for: .audible))?.options.map(\.displayName) ?? []
-                return "playing (t=\(Int(seconds))s, \(Int(size.width))x\(Int(size.height)), duration \(Int(CMTimeGetSeconds(item.duration)))s, audio \(audio), languages \(source.audioLanguages))"
+                return "playing (t=\(Int(seconds))s, \(Int(size.width))x\(Int(size.height)), duration \(Int(CMTimeGetSeconds(item.duration)))s, audio \(audio), languages \(source.audioLanguages)), \(seekResult)"
             }
         }
         player.pause()
