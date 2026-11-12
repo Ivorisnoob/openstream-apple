@@ -1,0 +1,12 @@
+.DS_Store
+xcuserdata/
+.build/
+.swiftpm/
+DerivedData/
+build/
+
+# The TMDB key lives here.
+Config/Secrets.xcconfig
+
+# Scratch work: probes, drafts, artwork. Never committed.
+.scratchpad/

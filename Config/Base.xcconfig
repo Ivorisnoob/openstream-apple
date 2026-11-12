@@ -1,0 +1,3 @@
+// Shared by every configuration of the app target.
+// The TMDB key comes from Secrets.xcconfig, which stays out of git.
+#include? "Secrets.xcconfig"

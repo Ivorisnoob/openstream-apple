@@ -1,0 +1,209 @@
+import Foundation
+import Testing
+@testable import OpenStreamCore
+
+private func fixture(_ name: String) throws -> Data {
+    let url = try #require(Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
+    return try Data(contentsOf: url)
+}
+
+private func decode<T: Decodable>(_ type: T.Type, _ name: String) throws -> T {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    return try decoder.decode(type, from: fixture(name))
+}
+
+@Suite("TMDB")
+struct TMDBTests {
+    @Test func movieDetails() throws {
+        let details = try decode(DetailsDTO.self, "movie").details(kind: .movie)
+        #expect(details.summary.name == "Inception")
+        #expect(details.summary.year == 2010)
+        #expect(details.imdbID == "tt1375666")
+        #expect(details.runtime == 148)
+        #expect(details.certification == "PG-13")
+        #expect(details.logoPath != nil)
+        #expect(details.cast.first?.name == "Leonardo DiCaprio")
+        #expect(details.crew.contains { $0.role == "Director, Writer" && $0.name == "Christopher Nolan" })
+        #expect(!details.trailers.isEmpty)
+        #expect(!details.recommendations.isEmpty)
+        #expect(details.recommendations.allSatisfy { $0.kind == .movie })
+    }
+
+    @Test func showDetails() throws {
+        let details = try decode(DetailsDTO.self, "tv").details(kind: .tv)
+        #expect(details.summary.name == "Breaking Bad")
+        #expect(details.imdbID == "tt0903747")
+        #expect(details.certification != nil)
+        // Specials go last; seasons in order before them.
+        let numbers = details.playableSeasons.map(\.number)
+        #expect(numbers.first == 1)
+        #expect(numbers.last == 0)
+    }
+
+    @Test func season() throws {
+        let dto = try decode(SeasonDTO.self, "season")
+        let episodes = (dto.episodes ?? []).compactMap { $0.episode(season: 1) }
+        #expect(episodes.count == 7)
+        #expect(episodes[0].number == 1 && episodes[0].season == 1)
+        #expect(episodes[0].hasAired)
+    }
+
+    @Test func mixedListsKeepTheirKinds() throws {
+        let page = try decode(PageDTO<TitleDTO>.self, "trending")
+        let titles = (page.results ?? []).compactMap { $0.summary(defaultKind: nil) }
+        #expect(!titles.isEmpty)
+        #expect(Set(titles.map(\.kind)).count == 2)
+    }
+
+    @Test func searchSeparatesPeople() throws {
+        let page = try decode(PageDTO<TitleDTO>.self, "search")
+        let results = page.results ?? []
+        let titles = results.compactMap { $0.summary(defaultKind: nil) }
+        #expect(titles.count == results.filter { $0.mediaType != "person" }.count)
+    }
+
+    @Test func person() throws {
+        let person = try decode(PersonDTO.self, "person").person
+        #expect(person.name == "Bryan Cranston")
+        #expect(!person.credits.isEmpty)
+        #expect(Set(person.credits.map(\.ref)).count == person.credits.count)
+    }
+
+    @Test func imageSizes() {
+        #expect(TMDBImage.url("/a.jpg", kind: .poster, pixels: 300)?.absoluteString == "https://image.tmdb.org/t/p/w342/a.jpg")
+        #expect(TMDBImage.url("/a.jpg", kind: .backdrop, pixels: 3000)?.absoluteString == "https://image.tmdb.org/t/p/original/a.jpg")
+        #expect(TMDBImage.url(nil, kind: .poster, pixels: 300) == nil)
+    }
+}
+
+@Suite("Streams")
+struct StreamTests {
+    @Test func quality() {
+        #expect(StreamQuality.parse("4KHDHub 1080p") == .q1080)
+        #expect(StreamQuality.parse("2160p UHD") == .q2160)
+        #expect(StreamQuality.parse("UHD BluRay") == .q2160)
+        #expect(StreamQuality.parse("720") == .q720)
+        #expect(StreamQuality.parse("something") == .unknown)
+    }
+
+    @Test func vidkingCipherRoundTrip() {
+        let plain = Array("mvm1{\"playlist\":\"https://x/master.m3u8\"}".utf8)
+        let stream = VidkingCipher.keyStream(seed: "abc123", mediaID: 27205, count: plain.count)
+        let encrypted = Data(zip(plain, stream).map { $0 ^ $1 })
+        let encoded = encrypted.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        #expect(VidkingCipher.decrypt(encoded, seed: "abc123", mediaID: 27205) == "{\"playlist\":\"https://x/master.m3u8\"}")
+        #expect(VidkingCipher.decrypt(encoded, seed: "other", mediaID: 27205) == nil)
+    }
+
+    /// Values from the Kotlin implementation's algorithm, so a port mistake shows.
+    @Test func vidkingKeyStreamIsStable() {
+        let bytes = VidkingCipher.keyStream(seed: "seed", mediaID: 1, count: 8)
+        #expect(bytes == VidkingCipher.keyStream(seed: "seed", mediaID: 1, count: 8))
+        #expect(bytes != VidkingCipher.keyStream(seed: "seed", mediaID: 2, count: 8))
+    }
+
+    @Test func stremioSkipsLinklessStreamsAndGroupsReleases() throws {
+        let releases = StremioProvider.parse(try fixture("stremio"), providerID: "hdhub", providerName: "HDHub", title: "Inception")
+        let all = releases.flatMap { $0 }
+        #expect(!all.isEmpty)
+        #expect(all.allSatisfy { $0.url.scheme?.hasPrefix("http") == true })
+        #expect(all.allSatisfy { !$0.name.unicodeScalars.contains { $0.properties.isEmojiPresentation } })
+        #expect(all.contains { $0.quality == .q2160 })
+        #expect(Set(all.map(\.id)).count == all.count)
+    }
+
+    @Test func stremioIDs() {
+        let provider = StremioProvider(id: "x", name: "X", endpoint: URL(string: "https://a.b/conf/manifest.json")!)
+        #expect(provider.baseURL.absoluteString == "https://a.b/conf")
+        let episode = MediaIdentity(ref: TitleRef(kind: .tv, id: 1396), imdbID: "tt0903747", title: "Breaking Bad",
+                                    year: 2008, season: 2, episode: 3)
+        #expect(provider.candidateIDs(episode, info: ManifestInfo(types: [], idPrefixes: nil)) == ["tt0903747:2:3"])
+        #expect(provider.candidateIDs(episode, info: ManifestInfo(types: [], idPrefixes: ["tmdb:"])) == ["tmdb:1396:2:3"])
+    }
+
+    @Test func ranking() {
+        func source(_ id: String, _ provider: String, _ quality: StreamQuality, _ path: String = "/a.m3u8") -> StreamSource {
+            StreamSource(id: id, providerID: provider, providerName: provider, name: id,
+                         url: URL(string: "https://h\(path)")!, quality: quality)
+        }
+        let ranked = StreamFinder.rank([
+            source("mkv", "a", .q2160, "/a.mkv"),
+            source("p2-1080", "b", .q1080),
+            source("p1-1080", "a", .q1080),
+            source("p1-auto", "a", .unknown),
+        ], order: ["a", "b"])
+        #expect(ranked.map(\.id) == ["p1-1080", "p2-1080", "p1-auto", "mkv"])
+        // A link that doesn't say its format waits behind HLS; one named .mkv goes last.
+        var unknown = source("file", "a", .q2160, "/stream/123")
+        var named = source("named", "a", .q2160, "/stream/456")
+        named.fileExtension = "mkv"
+        let mixed = StreamFinder.rank([unknown, named, source("hls", "b", .q720)], order: ["a", "b"])
+        #expect(mixed.map(\.id) == ["hls", "file", "named"])
+        unknown.fileExtension = "mp4"
+        #expect(StreamFinder.rank([source("hls", "b", .q720), unknown], order: []).first?.id == "file")
+    }
+
+    @Test func bundledCatalog() {
+        let catalog = Catalog.bundled
+        #expect(catalog.extensions.count > 10)
+        #expect(catalog.extensions.contains { $0.engine.type == "stremio" })
+        let newer = Catalog(name: "x", extensions: [Catalog.Entry(id: "yoru", name: "Yoru 2", versionCode: 99,
+                                                                    engine: .init(type: "vidking-direct")),
+                                                     Catalog.Entry(id: "new", name: "New", engine: .init(type: "stremio"))])
+        let merged = catalog.merged(with: newer)
+        #expect(merged.extensions.first { $0.id == "yoru" }?.name == "Yoru 2")
+        #expect(merged.extensions.last?.id == "new")
+    }
+
+    @Test func webPlayerTemplates() {
+        struct NoSniffer: WebPlayerSniffing {
+            func streams(at page: URL, timeout: Duration) async -> [SniffedStream] { [] }
+        }
+        let provider = WebPlayerProvider(id: "w", name: "W", movieTemplate: "https://p/movie/{tmdbId}",
+                                         tvTemplate: "https://p/tv/{tmdbId}/{season}/{episode}", isFallback: true,
+                                         sniffer: NoSniffer())
+        let episode = MediaIdentity(ref: TitleRef(kind: .tv, id: 5), imdbID: nil, title: "T", year: nil, season: 2, episode: 7)
+        #expect(provider.pageURL(for: episode)?.absoluteString == "https://p/tv/5/2/7")
+    }
+}
+
+@Suite("Library")
+@MainActor
+struct LibraryTests {
+    let show = TitleSummary(ref: TitleRef(kind: .tv, id: 1), name: "Show")
+
+    @Test func resumeOnlyBetweenStartAndCredits() {
+        let library = Library(file: nil)
+        library.record(show, season: 1, episode: 1, episodeName: nil, stillPath: nil, seconds: 10, duration: 1000)
+        #expect(library.resumeTime(show.ref, season: 1, episode: 1) == nil)
+        #expect(library.continueWatching.isEmpty)
+        library.record(show, season: 1, episode: 1, episodeName: nil, stillPath: nil, seconds: 400, duration: 1000)
+        #expect(library.resumeTime(show.ref, season: 1, episode: 1) == 400)
+        #expect(library.continueWatching.first?.episode == 1)
+        library.record(show, season: 1, episode: 1, episodeName: nil, stillPath: nil, seconds: 990, duration: 1000)
+        #expect(library.resumeTime(show.ref, season: 1, episode: 1) == nil)
+    }
+
+    @Test func finishingMovesToTheNextEpisode() {
+        let library = Library(file: nil)
+        library.record(show, season: 1, episode: 1, episodeName: nil, stillPath: nil, seconds: 400, duration: 1000)
+        let next = Episode(season: 1, number: 2, name: "Two", overview: "", stillPath: nil, airDate: "2020-01-01", runtime: 40)
+        library.finish(show, season: 1, episode: 1, episodeName: "One", next: next)
+        #expect(library.isWatched(show.ref, season: 1, episode: 1))
+        #expect(library.continueWatching.count == 1)
+        #expect(library.continueWatching[0].episode == 2 && library.continueWatching[0].isNext)
+        #expect(library.history.count == 1)
+    }
+
+    @Test func savesAndReopens() async throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: "library-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let library = Library(file: file)
+        library.toggleWatchlist(show)
+        library.flush()
+        #expect(Library(file: file).isInWatchlist(show.ref))
+    }
+}

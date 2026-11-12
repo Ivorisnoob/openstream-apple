@@ -1,0 +1,179 @@
+import Foundation
+
+/// How one source is getting on with a search.
+public enum SourceStatus: Hashable, Sendable {
+    case waiting
+    case searching
+    case found(Int)
+    case nothing
+    case failed(String)
+
+    public var isDone: Bool {
+        switch self {
+        case .waiting, .searching: false
+        default: true
+        }
+    }
+}
+
+public struct SearchUpdate: Sendable {
+    public var providerID: String
+    public var status: SourceStatus
+    public var sources: [StreamSource]
+}
+
+/// Asks every enabled source at once and reports each as it answers, so the player can start
+/// on the first good stream while slower sources are still looking.
+///
+/// Fallback sources (web players, which load whole pages) wait until the direct ones have
+/// found nothing, or nothing after eight seconds. Each source gets 25 seconds.
+public final class StreamFinder: Sendable {
+    public let providers: [any StreamProvider]
+    private let cache = ResolvedStreamCache()
+
+    public init(providers: [any StreamProvider]) {
+        self.providers = providers
+    }
+
+    static let perSourceLimit: Duration = .seconds(25)
+    /// Web players load whole pages a few at a time, so their limit covers waiting their turn.
+    static let fallbackLimit: Duration = .seconds(60)
+    static let fallbackDelay: Duration = .seconds(8)
+
+    /// The last complete search for this episode, if it found something in the last ten minutes.
+    /// Links from sources expire, which is why the window is short and memory only.
+    public func cached(_ identity: MediaIdentity) async -> [StreamSource]? {
+        await cache.sources(for: cacheKey(identity))
+    }
+
+    public func forget(_ identity: MediaIdentity) async {
+        await cache.remove(cacheKey(identity))
+    }
+
+    public func search(_ identity: MediaIdentity) -> AsyncStream<SearchUpdate> {
+        let providers = self.providers
+        let cache = self.cache
+        let key = cacheKey(identity)
+        return AsyncStream { continuation in
+            let task = Task {
+                let direct = providers.filter { !$0.isFallback }
+                let fallback = providers.filter(\.isFallback)
+                for provider in providers {
+                    continuation.yield(SearchUpdate(providerID: provider.id, status: provider.isFallback ? .waiting : .searching, sources: []))
+                }
+                var all: [StreamSource] = []
+                var finishedAll = true
+                await withTaskGroup(of: SearchUpdate?.self) { group in
+                    for provider in direct {
+                        group.addTask { await Self.run(provider, identity) }
+                    }
+                    let fallbackTimer = !fallback.isEmpty
+                    if fallbackTimer {
+                        group.addTask {
+                            try? await Task.sleep(for: Self.fallbackDelay)
+                            return nil
+                        }
+                    }
+                    var directLeft = direct.count
+                    var startedFallback = fallback.isEmpty
+                    func startFallback() {
+                        guard !startedFallback else { return }
+                        startedFallback = true
+                        for provider in fallback {
+                            continuation.yield(SearchUpdate(providerID: provider.id, status: .searching, sources: []))
+                            group.addTask { await Self.run(provider, identity) }
+                        }
+                    }
+                    if direct.isEmpty { startFallback() }
+                    for await update in group {
+                        guard let update else {
+                            if all.isEmpty { startFallback() }
+                            continue
+                        }
+                        if Task.isCancelled { finishedAll = false; break }
+                        all += update.sources
+                        continuation.yield(update)
+                        if direct.contains(where: { $0.id == update.providerID }) {
+                            directLeft -= 1
+                            if directLeft == 0, all.isEmpty { startFallback() }
+                        }
+                    }
+                    if !startedFallback {
+                        for provider in fallback {
+                            continuation.yield(SearchUpdate(providerID: provider.id, status: .nothing, sources: []))
+                        }
+                    }
+                }
+                if finishedAll, !Task.isCancelled, !all.isEmpty { await cache.store(all, for: key) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private static func run(_ provider: any StreamProvider, _ identity: MediaIdentity) async -> SearchUpdate {
+        let result = await withTaskGroup(of: Result<[StreamSource], any Error>?.self) { group in
+            group.addTask {
+                do { return .success(try await provider.resolve(identity)) } catch { return .failure(error) }
+            }
+            group.addTask {
+                try? await Task.sleep(for: provider.isFallback ? fallbackLimit : perSourceLimit)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? .failure(ProviderError.timedOut)
+        }
+        switch result {
+        case .success(let sources):
+            return SearchUpdate(providerID: provider.id, status: sources.isEmpty ? .nothing : .found(sources.count),
+                                sources: sources)
+        case .failure(let error):
+            let message = (error as? LocalizedError)?.errorDescription ?? (error as? URLError).map { _ in "Couldn't connect" } ?? "Failed"
+            return SearchUpdate(providerID: provider.id, status: .failed(message), sources: [])
+        }
+    }
+
+    private func cacheKey(_ identity: MediaIdentity) -> String {
+        identity.key + "|" + providers.map(\.id).joined(separator: ",")
+    }
+
+    /// Best first: streams AVFoundation surely opens (HLS, MP4), then links that don't say, then
+    /// formats it can't open; within each, quality (an unlabelled stream counts as
+    /// 720p, since most are adaptive), then the viewer's order of sources.
+    public static func rank(_ sources: [StreamSource], order: [String]) -> [StreamSource] {
+        let position = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        func score(_ quality: StreamQuality) -> Int { quality == .unknown ? StreamQuality.q720.rawValue : quality.rawValue }
+        return sources.enumerated().sorted { a, b in
+            let (x, y) = (a.element, b.element)
+            if x.playabilityRank != y.playabilityRank { return x.playabilityRank > y.playabilityRank }
+            if score(x.quality) != score(y.quality) { return score(x.quality) > score(y.quality) }
+            let px = position[x.providerID] ?? .max, py = position[y.providerID] ?? .max
+            if px != py { return px < py }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+}
+
+actor ResolvedStreamCache {
+    private var entries: [String: (sources: [StreamSource], at: Date)] = [:]
+    private let lifetime: TimeInterval = 600
+
+    func sources(for key: String) -> [StreamSource]? {
+        guard let entry = entries[key] else { return nil }
+        guard Date.now.timeIntervalSince(entry.at) < lifetime else {
+            entries[key] = nil
+            return nil
+        }
+        return entry.sources
+    }
+
+    func store(_ sources: [StreamSource], for key: String) {
+        entries = entries.filter { Date.now.timeIntervalSince($0.value.at) < lifetime }
+        entries[key] = (sources, .now)
+    }
+
+    func remove(_ key: String) {
+        entries[key] = nil
+    }
+}
