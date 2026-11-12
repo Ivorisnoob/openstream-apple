@@ -330,7 +330,7 @@ private struct EpisodeCard: View {
                             Text(episode.name)
                                 .font(.subheadline.weight(.semibold))
                                 .lineLimit(1)
-                            Text(episode.overview.isEmpty ? " " : episode.overview)
+                            Text(episode.overview.isEmpty ? "\u{00A0}" : episode.overview)
                                 .font(.caption)
                                 .opacity(0.85)
                                 .lineLimit(2, reservesSpace: true)
