@@ -40,6 +40,7 @@ struct OpenStreamApp: App {
         Settings {
             SettingsView()
                 .environment(model)
+                .preferredColorScheme(model.settings.appearance.colorScheme)
         }
     }
 }
@@ -55,6 +56,7 @@ private struct MainWindow: View {
 
     var body: some View {
         RootView()
+            .preferredColorScheme(app.settings.appearance.colorScheme)
             .onChange(of: app.playback.windowRequests) { _, _ in openWindow(id: PlayerWindow.id) }
     }
 }

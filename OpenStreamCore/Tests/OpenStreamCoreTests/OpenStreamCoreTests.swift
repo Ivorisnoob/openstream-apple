@@ -136,6 +136,13 @@ struct StreamTests {
             source("p1-auto", "a", .unknown),
         ], order: ["a", "b"])
         #expect(ranked.map(\.id) == ["p1-1080", "p2-1080", "p1-auto", "mkv"])
+        // A cap at 720p makes a 1080p stream no better than a 720p one; the order decides.
+        let capped = StreamFinder.rank([source("b-1080", "b", .q1080), source("a-720", "a", .q720)], order: ["a", "b"], maxQuality: .q720)
+        #expect(capped.first?.id == "a-720")
+        var dub = source("dub", "b", .q720)
+        dub.audio = .dub
+        let dubbed = StreamFinder.rank([source("orig", "a", .q1080), dub], order: ["a", "b"], audio: .dub)
+        #expect(dubbed.first?.id == "dub")
         // A link that doesn't say its format waits behind HLS; one named .mkv goes last.
         var unknown = source("file", "a", .q2160, "/stream/123")
         var named = source("named", "a", .q2160, "/stream/456")
@@ -198,6 +205,22 @@ struct LibraryTests {
         #expect(library.history.count == 1)
     }
 
+    @Test func backupRestoresIntoAnotherLibrary() throws {
+        let source = Library(file: nil)
+        source.toggleWatchlist(show)
+        source.record(show, season: 1, episode: 2, episodeName: nil, stillPath: nil, seconds: 500, duration: 1000)
+        let target = Library(file: nil)
+        let other = TitleSummary(ref: TitleRef(kind: .movie, id: 9), name: "Film")
+        target.toggleWatchlist(other)
+        let summary = try target.restore(source.backup())
+        #expect(summary.watchlist == 1)
+        #expect(target.watchlist.map(\.ref) == [other.ref, show.ref])
+        #expect(target.resumeTime(show.ref, season: 1, episode: 2) == 500)
+        #expect(target.continueWatching.first?.title.ref == show.ref)
+        // Restoring again changes nothing.
+        #expect(try target.restore(source.backup()).watchlist == 0)
+    }
+
     @Test func savesAndReopens() async throws {
         let file = FileManager.default.temporaryDirectory.appending(path: "library-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: file) }
@@ -236,5 +259,32 @@ struct SubtitleTests {
         let cues = Subtitles.parse(vtt)
         #expect(cues.map(\.text) == ["Hi", "Late"])
         #expect(cues[1].start == 3600.5)
+    }
+}
+
+@Suite("Working sources")
+@MainActor
+struct WorkingSourcesTests {
+    @Test func remembersPerTitleAndKeepsTheMostRecent() async throws {
+        let sources = WorkingSources(file: nil, limit: 2)
+        let a = TitleRef(kind: .movie, id: 1), b = TitleRef(kind: .tv, id: 2), c = TitleRef(kind: .movie, id: 3)
+        sources.record("hdhub", for: a)
+        try await Task.sleep(for: .milliseconds(5))
+        sources.record("phoenix", for: b)
+        try await Task.sleep(for: .milliseconds(5))
+        sources.record("yastream", for: c)
+        #expect(sources.count == 2)
+        #expect(sources.provider(for: a) == nil)
+        #expect(sources.provider(for: b) == "phoenix")
+        sources.forget(b)
+        #expect(sources.provider(for: b) == nil)
+    }
+
+    @Test func savesAndReopens() async throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: "working-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        WorkingSources(file: file).record("hdhub", for: TitleRef(kind: .movie, id: 7))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(WorkingSources(file: file).provider(for: TitleRef(kind: .movie, id: 7)) == "hdhub")
     }
 }

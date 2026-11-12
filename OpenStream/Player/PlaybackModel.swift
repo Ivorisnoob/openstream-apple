@@ -73,6 +73,11 @@ final class PlaybackModel {
     @ObservationIgnored private var lookedFurther = false
     @ObservationIgnored private var hardErrors = 0
     @ObservationIgnored private var cues: [SubtitleCue] = []
+    /// Search Again asks every source, not the one remembered for this title.
+    @ObservationIgnored private var searchesEverywhere = false
+    /// Seconds the current stream has really played; at 20 its source is remembered.
+    @ObservationIgnored private var playedSeconds = 0
+    @ObservationIgnored private var rememberedThisStream = false
     @ObservationIgnored private var openSubtitles: [SubtitleOption] = []
 
     init(tmdb: TMDB, library: Library) {
@@ -166,7 +171,8 @@ final class PlaybackModel {
                                              season: self.episode?.season ?? 1, episode: self.episode?.number ?? 1)
                 self.identity = identity
                 Log.playback.notice("Start \(identity.key, privacy: .public) \(details.summary.name, privacy: .public)")
-                pendingSeek = library.resumeTime(title.ref, season: self.episode?.season, episode: self.episode?.number)
+                pendingSeek = app?.settings.resumesPlayback == false ? nil
+                    : library.resumeTime(title.ref, season: self.episode?.season, episode: self.episode?.number)
                 loadSubtitleOptions(identity)
                 await findSources(identity)
             } catch is CancellationError {
@@ -211,6 +217,13 @@ final class PlaybackModel {
             pickBest()
             return
         }
+        let everywhere = searchesEverywhere
+        searchesEverywhere = false
+        if !everywhere, let remembered = app?.workingSources.provider(for: identity.ref),
+           finder.providers.contains(where: { $0.id == remembered }),
+           await tryRemembered(remembered, finder: finder, identity: identity) {
+            return
+        }
         phase = .searching
         searching = true
         for await update in finder.search(identity) {
@@ -233,8 +246,45 @@ final class PlaybackModel {
         }
     }
 
+    /// Asks the source that last played this title, alone, for up to ten seconds. With streams,
+    /// playback starts at once and every other source is marked skipped, so they're asked only if
+    /// those streams fail. Without, the source is forgotten for this title and the full search runs.
+    private func tryRemembered(_ id: String, finder: StreamFinder, identity: MediaIdentity) async -> Bool {
+        phase = .searching
+        searching = true
+        for provider in finder.providers { statuses[provider.id] = provider.id == id ? .searching : .waiting }
+        Log.playback.notice("Asking \(id, privacy: .public) first: it played this title last time")
+        let attempt = Task { @MainActor in
+            var found: [StreamSource] = []
+            for await update in finder.search(identity, only: [id]) {
+                self.statuses[update.providerID] = update.status
+                found += update.sources
+            }
+            return found
+        }
+        let timer = Task {
+            try? await Task.sleep(for: .seconds(10))
+            attempt.cancel()
+        }
+        let found = await attempt.value
+        timer.cancel()
+        searching = false
+        guard !Task.isCancelled else { return true }
+        guard !found.isEmpty else {
+            Log.playback.notice("\(id, privacy: .public) had nothing this time")
+            app?.workingSources.forget(identity.ref)
+            return false
+        }
+        for provider in finder.providers where provider.id != id { statuses[provider.id] = .skipped }
+        sources = rank(found)
+        refreshSubtitleOptions()
+        pickBest()
+        return true
+    }
+
     private func rank(_ sources: [StreamSource]) -> [StreamSource] {
-        StreamFinder.rank(sources, order: app?.sources.rankingOrder ?? [])
+        StreamFinder.rank(sources, order: app?.sources.rankingOrder ?? [],
+                          audio: app?.settings.audioPreference.streamAudio, maxQuality: app?.settings.streamQualityCap)
     }
 
     /// The first stream found waits a moment for better ones from slower sources.
@@ -318,7 +368,10 @@ final class PlaybackModel {
             AVURLAssetHTTPUserAgentKey: agent?.value ?? SourceHTTP.userAgent,
         ])
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 30
+        if let cap = app?.settings.maxQuality, cap > 0 {
+            // A square of the height's size: the width a stream reports varies with its shape.
+            item.preferredMaximumResolution = CGSize(width: CGFloat(cap) * 16 / 9, height: CGFloat(cap))
+        }
         statusObservation = item.observe(\.status, options: [.new], changeHandler: Self.statusChanged(self, source: source))
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item,
                                                              queue: .main, using: Self.ended(self))
@@ -327,6 +380,8 @@ final class PlaybackModel {
         errorLogObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.newErrorLogEntryNotification, object: item,
                                                                   queue: .main, using: Self.errorLogged(self, source: source))
         hardErrors = 0
+        playedSeconds = 0
+        rememberedThisStream = false
         Log.playback.notice("Play \(source.providerID, privacy: .public) \(source.quality.label, privacy: .public) \(source.container, privacy: .public) \(source.url.host() ?? "", privacy: .public)")
         player.replaceCurrentItem(with: item)
         player.play()
@@ -356,6 +411,7 @@ final class PlaybackModel {
     func searchAgain() {
         guard let title else { return }
         if let identity { Task { await app?.sources.finder.forget(identity) } }
+        searchesEverywhere = true
         start(title, details: details, season: episode?.season, episode: episode?.number, episodes: seasonEpisodes)
     }
 
@@ -374,6 +430,14 @@ final class PlaybackModel {
     private func progressed(seconds: Double, duration: Double) {
         guard duration.isFinite, duration > 60, seconds.isFinite else { return }
         if Date.now.timeIntervalSince(lastSaved) >= 5 { saveProgress() }
+        if !rememberedThisStream, player.timeControlStatus == .playing, let current, let title {
+            playedSeconds += 1
+            if playedSeconds >= 20 {
+                rememberedThisStream = true
+                app?.workingSources.record(current.providerID, for: title.ref)
+                Log.playback.info("Remembered \(current.providerID, privacy: .public) for \(title.ref.description, privacy: .public)")
+            }
+        }
         let remaining = duration - seconds
         let nearEnd = nextEpisode != nil && remaining < max(45, duration * 0.03)
         if nearEnd != showsUpNext { showsUpNext = nearEnd }
@@ -394,7 +458,7 @@ final class PlaybackModel {
             markFinished()
         }
         guard nextEpisode != nil, app?.settings.autoplaysNextEpisode == true else { return }
-        countdown = 5
+        countdown = max(1, app?.settings.nextEpisodeCountdown ?? 5)
         countdownTask = Task {
             while let left = countdown, left > 0 {
                 try? await Task.sleep(for: .seconds(1))
@@ -517,9 +581,10 @@ final class PlaybackModel {
 
     /// Subtitles come back on in the language last chosen.
     private func autoSelectSubtitle() {
-        guard selectedSubtitle == nil, !isLoadingSubtitle, let language = app?.settings.subtitleLanguage,
-              let option = subtitleOptions.first(where: { ($0.languageCode ?? $0.language) == language })
+        guard selectedSubtitle == nil, !isLoadingSubtitle, let settings = app?.settings, let language = settings.subtitleLanguage
         else { return }
+        let matching = subtitleOptions.filter { ($0.languageCode ?? $0.language) == language }
+        guard let option = matching.first(where: { $0.isHearingImpaired == settings.prefersSDH }) ?? matching.first else { return }
         load(option)
     }
 

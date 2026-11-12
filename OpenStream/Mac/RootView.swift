@@ -84,6 +84,21 @@ private struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .safeAreaBar(edge: .bottom) {
+            // Settings at the sidebar's foot, opening the app's Settings window (⌘,).
+            SettingsLink {
+                Label("Settings", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+            .help("Settings (⌘,)")
+        }
     }
 
     private func row(_ item: SidebarItem) -> some View {

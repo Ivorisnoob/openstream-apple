@@ -145,12 +145,25 @@ public final class StreamFinder: Sendable {
     /// Best first: streams AVFoundation surely opens (HLS, MP4), then links that don't say, then
     /// formats it can't open; within each, quality (an unlabelled stream counts as
     /// 720p, since most are adaptive), then the viewer's order of sources.
-    public static func rank(_ sources: [StreamSource], order: [String]) -> [StreamSource] {
+    /// `audio` puts streams the viewer prefers (original or dubbed) ahead within the same
+    /// playability; `maxQuality` treats anything above it as that quality, so a 4K stream doesn't
+    /// win over 1080p for someone who capped at 1080p.
+    public static func rank(_ sources: [StreamSource], order: [String], audio: StreamAudio? = nil,
+                            maxQuality: StreamQuality? = nil) -> [StreamSource] {
         let position = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
-        func score(_ quality: StreamQuality) -> Int { quality == .unknown ? StreamQuality.q720.rawValue : quality.rawValue }
+        func score(_ quality: StreamQuality) -> Int {
+            let value = quality == .unknown ? StreamQuality.q720.rawValue : quality.rawValue
+            return min(value, maxQuality?.rawValue ?? .max)
+        }
+        func matches(_ source: StreamSource) -> Bool {
+            guard let audio else { return false }
+            if audio == .dub { return source.audio == .dub || source.audio == .multi }
+            return source.audio != .dub
+        }
         return sources.enumerated().sorted { a, b in
             let (x, y) = (a.element, b.element)
             if x.playabilityRank != y.playabilityRank { return x.playabilityRank > y.playabilityRank }
+            if matches(x) != matches(y) { return matches(x) }
             if score(x.quality) != score(y.quality) { return score(x.quality) > score(y.quality) }
             let px = position[x.providerID] ?? .max, py = position[y.providerID] ?? .max
             if px != py { return px < py }

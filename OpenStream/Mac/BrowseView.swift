@@ -15,7 +15,7 @@ struct BrowseView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 36) {
                         HeroCarousel(state: model.hero)
-                        if model.style == .home, !app.library.continueWatching.isEmpty {
+                        if model.style == .home, app.settings.showsContinueOnHome, !app.library.continueWatching.isEmpty {
                             ContinueWatchingShelf(items: app.library.continueWatching)
                         }
                         if !model.genres.isEmpty, let kind = model.kind {
@@ -93,6 +93,7 @@ struct HeroCarousel: View {
     @State private var hovering = false
     @State private var width: CGFloat = 900
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(AppModel.self) private var app
 
     private var height: CGFloat { min(max(width * 0.44, 380), 640) }
 
@@ -138,8 +139,8 @@ struct HeroCarousel: View {
         .overlay(alignment: .trailing) { arrow(forward: true, count: titles.count) }
         .onHover { hovering = $0 }
         .environment(\.colorScheme, .dark)
-        .task(id: "\(titles.count)-\(hovering)") {
-            guard titles.count > 1, !hovering, !reduceMotion else { return }
+        .task(id: "\(titles.count)-\(hovering)-\(app.settings.heroAdvances)") {
+            guard titles.count > 1, !hovering, !reduceMotion, app.settings.heroAdvances else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(9))
                 guard !Task.isCancelled else { return }

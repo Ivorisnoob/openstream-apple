@@ -217,18 +217,32 @@ private struct SubtitleText: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             .overlay(alignment: .bottom) {
                 if let text = app.playback.cueText {
-                    Text(text)
-                        .font(.system(size: max(16, height * 0.042), weight: .medium))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(.black.opacity(0.55), in: .rect(cornerRadius: 6))
+                    SubtitleLine(text: text, height: height)
                         .padding(.horizontal, 40)
                         .padding(.bottom, height * 0.09)
                         .accessibilityAddTraits(.updatesFrequently)
                 }
             }
+    }
+}
+
+/// One subtitle line in the viewer's chosen size, colour and background (Settings → Subtitles);
+/// a shadow keeps it readable when there's no background.
+struct SubtitleLine: View {
+    let text: String
+    let height: CGFloat
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let settings = app.settings
+        Text(text)
+            .font(.system(size: max(14, height * settings.subtitleSize.fraction), weight: .medium))
+            .foregroundStyle(settings.subtitleColor.color)
+            .multilineTextAlignment(.center)
+            .shadow(color: .black.opacity(settings.subtitleBackground == .none ? 0.9 : 0), radius: 2, y: 1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.black.opacity(settings.subtitleBackground.opacity), in: .rect(cornerRadius: 6))
     }
 }
 

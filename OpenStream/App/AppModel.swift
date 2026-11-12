@@ -10,6 +10,7 @@ final class AppModel {
     let library: Library
     let settings = AppSettings()
     let sources: SourcesStore
+    let workingSources: WorkingSources
     let playback: PlaybackModel
 
     var selection: SidebarItem = .home
@@ -32,8 +33,10 @@ final class AppModel {
         tmdb = TMDB(apiKey: Secrets.tmdbKey, cacheDirectory: caches.appending(path: "TMDB"))
         library = Library(file: support.appending(path: "library.json"))
         sources = SourcesStore(folder: support)
+        workingSources = WorkingSources(file: support.appending(path: "working-sources.json"))
         playback = PlaybackModel(tmdb: tmdb, library: library)
         playback.app = self
+        selection = settings.startPage.item
     }
 
     func path(for item: SidebarItem) -> Binding<[Route]> {

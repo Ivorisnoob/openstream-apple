@@ -204,6 +204,65 @@ public final class Library {
         save()
     }
 
+    public func clearContinueWatching() {
+        continueWatching.removeAll()
+        save()
+    }
+
+    public func clearWatchlist() {
+        watchlist.removeAll()
+        save()
+    }
+
+    // MARK: Backup
+
+    /// Everything the viewer has, as a JSON file they can keep or move to another Mac.
+    public func backup() -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return (try? encoder.encode(snapshot)) ?? Data()
+    }
+
+    public struct RestoreSummary: Sendable {
+        public var watchlist: Int
+        public var progress: Int
+        public var history: Int
+    }
+
+    /// Merges a backup into what's here: nothing is lost on either side, and where both have
+    /// the same film or episode, the more recent position wins.
+    @discardableResult
+    public func restore(_ data: Data) throws -> RestoreSummary {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let other = try decoder.decode(Snapshot.self, from: data)
+        let known = Set(watchlist.map(\.ref))
+        let newWatchlist = other.watchlist.filter { !known.contains($0.ref) }
+        watchlist += newWatchlist
+        var progress = 0
+        for (key, position) in other.positions where (positions[key]?.updatedAt ?? .distantPast) < position.updatedAt {
+            positions[key] = position
+            progress += 1
+        }
+        watched.formUnion(other.watched)
+        let historyIDs = Set(history.map(\.id))
+        let newHistory = other.history.filter { !historyIDs.contains($0.id) }
+        history = (history + newHistory).sorted { $0.watchedAt > $1.watchedAt }
+        var items = Dictionary(continueWatching.map { ($0.title.ref, $0) }, uniquingKeysWith: { a, _ in a })
+        for item in other.continueWatching where (items[item.title.ref]?.position.updatedAt ?? .distantPast) < item.position.updatedAt {
+            items[item.title.ref] = item
+        }
+        continueWatching = items.values.sorted { $0.position.updatedAt > $1.position.updatedAt }
+        save()
+        return RestoreSummary(watchlist: newWatchlist.count, progress: progress, history: newHistory.count)
+    }
+
+    private var snapshot: Snapshot {
+        Snapshot(watchlist: watchlist, continueWatching: continueWatching, history: history,
+                 positions: positions, watched: watched)
+    }
+
     // MARK: Saving
 
     /// Written off the main thread; frequent progress updates are batched.
