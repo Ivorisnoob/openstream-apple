@@ -75,8 +75,10 @@ final class PlaybackModel {
     @ObservationIgnored private var cues: [SubtitleCue] = []
     /// Search Again asks every source, not the one remembered for this title.
     @ObservationIgnored private var searchesEverywhere = false
-    /// Seconds the current stream has really played; at 20 its source is remembered.
-    @ObservationIgnored private var playedSeconds = 0
+    /// Seconds the current stream has really played, by the clock (time observers also fire on
+    /// seeks and rate changes, so they can't be counted); at 5 its source is remembered.
+    @ObservationIgnored private var playedSeconds: Double = 0
+    @ObservationIgnored private var lastPlayingTick: Date?
     @ObservationIgnored private var rememberedThisStream = false
     @ObservationIgnored private var openSubtitles: [SubtitleOption] = []
 
@@ -381,6 +383,7 @@ final class PlaybackModel {
                                                                   queue: .main, using: Self.errorLogged(self, source: source))
         hardErrors = 0
         playedSeconds = 0
+        lastPlayingTick = nil
         rememberedThisStream = false
         Log.playback.notice("Play \(source.providerID, privacy: .public) \(source.quality.label, privacy: .public) \(source.container, privacy: .public) \(source.url.host() ?? "", privacy: .public)")
         player.replaceCurrentItem(with: item)
@@ -430,9 +433,13 @@ final class PlaybackModel {
     private func progressed(seconds: Double, duration: Double) {
         guard duration.isFinite, duration > 60, seconds.isFinite else { return }
         if Date.now.timeIntervalSince(lastSaved) >= 5 { saveProgress() }
-        if !rememberedThisStream, player.timeControlStatus == .playing, let current, let title {
-            playedSeconds += 1
-            if playedSeconds >= 20 {
+        if !rememberedThisStream, let current, let title {
+            let now = Date.now
+            if player.timeControlStatus == .playing, let last = lastPlayingTick {
+                playedSeconds += min(now.timeIntervalSince(last), 1.5)
+            }
+            lastPlayingTick = player.timeControlStatus == .playing ? now : nil
+            if playedSeconds >= 5 {
                 rememberedThisStream = true
                 app?.workingSources.record(current.providerID, for: title.ref)
                 Log.playback.info("Remembered \(current.providerID, privacy: .public) for \(title.ref.description, privacy: .public)")

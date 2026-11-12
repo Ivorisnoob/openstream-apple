@@ -7,6 +7,9 @@ import SwiftUI
 struct PlayerView: View {
     @Environment(AppModel.self) private var app
     @State private var showsInspector = false
+    /// The pointer moved over the picture lately, so the system's controls are showing.
+    @State private var pointerActive = false
+    @State private var pointerIdle: Task<Void, Never>?
     @State private var inspectorTab: InspectorTab = .sources
 
     enum InspectorTab: String, CaseIterable, Identifiable {
@@ -22,7 +25,7 @@ struct PlayerView: View {
             VideoSurface(player: playback.player)
                 .opacity(playback.phase == .playing ? 1 : 0)
             if playback.phase == .playing {
-                SubtitleText()
+                SubtitleText(raised: pointerActive)
                     .allowsHitTesting(false)
                 BufferingIndicator()
             }
@@ -37,6 +40,18 @@ struct PlayerView: View {
                 .padding(.bottom, 96)
         }
         .animation(.easeInOut(duration: 0.3), value: playback.phase)
+        .onContinuousHover { phase in
+            // AVKit shows its controls while the pointer moves and hides them about three
+            // seconds after it stops; the subtitles follow the same rhythm.
+            pointerIdle?.cancel()
+            guard case .active = phase else { pointerActive = false; return }
+            pointerActive = true
+            pointerIdle = Task {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                pointerActive = false
+            }
+        }
         .ignoresSafeArea()
         .inspector(isPresented: $showsInspector) {
             PlayerInspector(tab: $inspectorTab)
@@ -209,6 +224,8 @@ private struct BufferingIndicator: View {
 /// The chosen subtitles over the picture, sized to it, in the plain white-on-dark style the
 /// system uses for captions.
 private struct SubtitleText: View {
+    /// Lifted clear of the control bar while it shows.
+    var raised = false
     @Environment(AppModel.self) private var app
     @State private var height: CGFloat = 600
 
@@ -219,7 +236,8 @@ private struct SubtitleText: View {
                 if let text = app.playback.cueText {
                     SubtitleLine(text: text, height: height)
                         .padding(.horizontal, 40)
-                        .padding(.bottom, height * 0.09)
+                        .padding(.bottom, raised ? max(110, height * 0.2) : height * 0.07)
+                        .animation(.smooth(duration: 0.35), value: raised)
                         .accessibilityAddTraits(.updatesFrequently)
                 }
             }
