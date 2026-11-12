@@ -132,7 +132,7 @@ struct HeroCarousel: View {
         }
         .frame(height: height)
         .frame(maxWidth: .infinity)
-        .clipped()
+        .heroShape()
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .overlay(alignment: .leading) { arrow(forward: false, count: titles.count) }
         .overlay(alignment: .trailing) { arrow(forward: true, count: titles.count) }
@@ -192,13 +192,11 @@ private struct HeroSlide: View {
         NavigationLink(value: Route.title(title)) {
             Artwork(path: title.backdropPath, kind: .backdrop, width: width)
                 .overlay {
-                    // Darker towards the text, so it reads over any picture; inside the extension
-                    // under the sidebar, so the shade has no edge there.
+                    // Darker towards the text, so it reads over any picture.
                     LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.35), .clear],
                                    startPoint: .bottomLeading, endPoint: .center)
                     LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .bottom, endPoint: .center)
                 }
-                .backgroundExtensionEffect()
         }
         .buttonStyle(.plain)
         .overlay(alignment: .bottomLeading) {
@@ -338,5 +336,14 @@ struct WatchlistButton: View {
         .help(saved ? "Remove from Watchlist" : "Add to Watchlist")
         .accessibilityLabel(saved ? "Remove from Watchlist" : "Add to Watchlist")
         .sensoryFeedback(.selection, trigger: saved)
+    }
+}
+
+extension View {
+    /// The featured picture at the top of a page: beside the sidebar rather than under it, up
+    /// under the toolbar, its foot rounded. Run under the floating sidebar, the picture's bottom
+    /// edge showed through the glass as a hard line wherever it ended.
+    func heroShape() -> some View {
+        clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 22, bottomTrailingRadius: 22, style: .continuous))
     }
 }
