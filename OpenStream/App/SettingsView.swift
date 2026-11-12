@@ -91,10 +91,18 @@ private struct PlaybackSettings: View {
                 Picker("Audio", selection: $settings.audioPreference) {
                     ForEach(AppSettings.AudioPreference.allCases) { Text($0.name).tag($0) }
                 }
+                Picker("Audio language", selection: $settings.audioLanguage) {
+                    Text("Automatic").tag(String?.none)
+                    Divider()
+                    ForEach(["en", "hi", "ja", "ko", "es", "fr", "de", "it", "pt", "ta", "te", "ru", "ar", "zh", "tr"]
+                        .sorted { AudioLanguages.name($0) < AudioLanguages.name($1) }, id: \.self) { code in
+                        Text(AudioLanguages.name(code)).tag(Optional(code))
+                    }
+                }
             } header: {
                 Text("Quality")
             } footer: {
-                Text("A lower quality uses less data and starts sooner on a slow connection. The audio choice decides between streams that offer both.")
+                Text("A lower quality uses less data and starts sooner on a slow connection. Streams and tracks in your audio language are picked first; the Audio button in the player sets it too.")
             }
             Section("Episodes") {
                 Toggle("Play the next episode automatically", isOn: $settings.autoplaysNextEpisode)

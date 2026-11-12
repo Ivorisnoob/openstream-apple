@@ -56,6 +56,8 @@ final class AppSettings {
     /// 0 = as good as the stream and connection allow.
     var maxQuality: Int { didSet { save(maxQuality, Keys.maxQuality) } }
     var audioPreference: AudioPreference { didSet { save(audioPreference.rawValue, Keys.audio) } }
+    /// The spoken language last picked in the player ("hi"), tried first next time; nil = the stream's own.
+    var audioLanguage: String? { didSet { save(audioLanguage, Keys.audioLanguage) } }
 
     enum AudioPreference: String, CaseIterable, Identifiable {
         case any, original, dubbed
@@ -147,6 +149,7 @@ final class AppSettings {
         static let countdown = "openstream.player.countdown"
         static let maxQuality = "openstream.player.maxQuality"
         static let audio = "openstream.player.audio"
+        static let audioLanguage = "openstream.player.audioLanguage"
         static let subtitles = "openstream.subtitles.language"
         static let sdh = "openstream.subtitles.sdh"
         static let subtitleSize = "openstream.subtitles.size"
@@ -169,6 +172,7 @@ final class AppSettings {
         nextEpisodeCountdown = defaults.integer(forKey: Keys.countdown)
         maxQuality = defaults.integer(forKey: Keys.maxQuality)
         audioPreference = AudioPreference(rawValue: defaults.string(forKey: Keys.audio) ?? "") ?? .any
+        audioLanguage = defaults.string(forKey: Keys.audioLanguage)
         subtitleLanguage = defaults.string(forKey: Keys.subtitles)
         prefersSDH = defaults.bool(forKey: Keys.sdh)
         subtitleSize = SubtitleSize(rawValue: defaults.string(forKey: Keys.subtitleSize) ?? "") ?? .medium
@@ -196,6 +200,7 @@ final class AppSettings {
         nextEpisodeCountdown = fresh.nextEpisodeCountdown
         maxQuality = fresh.maxQuality
         audioPreference = fresh.audioPreference
+        audioLanguage = fresh.audioLanguage
         subtitleLanguage = fresh.subtitleLanguage
         prefersSDH = fresh.prefersSDH
         subtitleSize = fresh.subtitleSize

@@ -75,7 +75,8 @@ public struct VidkingProvider: StreamProvider {
                 id: "\(id)-master", providerID: id, providerName: name, name: name, url: url,
                 quality: all.map { StreamQuality.parse($0.quality) }.max() ?? .unknown,
                 audio: StreamAudio.parse(language), audioLanguage: audioLanguage,
-                headers: Self.headers, subtitles: subtitles, isHLSHint: true
+                headers: Self.headers, subtitles: subtitles, isHLSHint: true,
+                audioLanguages: AudioLanguages.detect(language ?? "")
             )]
         }
         return all.compactMap { source in
@@ -85,7 +86,8 @@ public struct VidkingProvider: StreamProvider {
             return StreamSource(
                 id: "\(id)-\(stableHash(link))", providerID: id, providerName: name, name: name, url: url,
                 quality: StreamQuality.parse(source.quality), audio: StreamAudio.parse(descriptor),
-                audioLanguage: audioLanguage, headers: Self.headers, subtitles: subtitles
+                audioLanguage: audioLanguage, headers: Self.headers, subtitles: subtitles,
+                audioLanguages: AudioLanguages.detect([language, qualityFilter].compactMap { $0 }.joined(separator: " "))
             )
         }
     }

@@ -59,6 +59,9 @@ struct PlayerView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                AudioMenu()
+            }
+            ToolbarItem(placement: .primaryAction) {
                 SubtitleMenu()
             }
             ToolbarItem(placement: .primaryAction) {
@@ -261,6 +264,54 @@ struct SubtitleLine: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(.black.opacity(settings.subtitleBackground.opacity), in: .rect(cornerRadius: 6))
+    }
+}
+
+/// Audio: the playing stream's own tracks, then every other language found for this film or
+/// episode, each a stream from some source that the player switches to at the same spot.
+private struct AudioMenu: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let playback = app.playback
+        let others = playback.otherLanguageStreams
+        Menu {
+            Section("This Stream") {
+                if playback.audioTracks.count > 1 {
+                    ForEach(playback.audioTracks, id: \.self) { track in
+                        Toggle(track.displayName, isOn: Binding { playback.selectedAudioTrack == track } set: {
+                            if $0 { playback.selectAudioTrack(track) }
+                        })
+                    }
+                } else {
+                    let languages = playback.currentLanguages.map(AudioLanguages.name)
+                    Text(languages.isEmpty ? "Original Audio" : languages.joined(separator: ", "))
+                }
+            }
+            if !others.isEmpty {
+                Section("Other Languages") {
+                    ForEach(others, id: \.source.id) { language, source in
+                        Button {
+                            playback.playLanguage(language, from: source)
+                        } label: {
+                            Text(AudioLanguages.name(language))
+                            Text("\(source.providerName) · \(source.quality.label)")
+                        }
+                    }
+                }
+            } else if playback.phase == .playing, !playback.canLookForMore, !playback.isLookingForMore {
+                Text("No other languages found")
+            }
+            if playback.isLookingForMore {
+                Text("Looking for other languages…")
+            } else if playback.canLookForMore {
+                Divider()
+                Button("Look for Other Languages") { playback.lookForMoreStreams() }
+            }
+        } label: {
+            Label("Audio", systemImage: "waveform")
+        }
+        .help("Audio language")
     }
 }
 

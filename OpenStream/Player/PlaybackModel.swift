@@ -47,6 +47,9 @@ final class PlaybackModel {
     private(set) var subtitleError: String?
     /// The subtitle line on screen now.
     private(set) var cueText: String?
+    /// The playing stream's own audio tracks, when it has a choice of them.
+    private(set) var audioTracks: [AVMediaSelectionOption] = []
+    private(set) var selectedAudioTrack: AVMediaSelectionOption?
 
     @ObservationIgnored weak var app: AppModel?
     @ObservationIgnored private let tmdb: TMDB
@@ -73,6 +76,7 @@ final class PlaybackModel {
     @ObservationIgnored private var lookedFurther = false
     @ObservationIgnored private var hardErrors = 0
     @ObservationIgnored private var cues: [SubtitleCue] = []
+    @ObservationIgnored private var audibleGroup: AVMediaSelectionGroup?
     /// Search Again asks every source, not the one remembered for this title.
     @ObservationIgnored private var searchesEverywhere = false
     /// Seconds the current stream has really played, by the clock (time observers also fire on
@@ -136,6 +140,7 @@ final class PlaybackModel {
         countdownTask?.cancel()
         lookedFurther = false
         isLookingFurther = false
+        isLookingForMore = false
         subtitleOptions = []
         openSubtitles = []
         selectedSubtitle = nil
@@ -286,7 +291,8 @@ final class PlaybackModel {
 
     private func rank(_ sources: [StreamSource]) -> [StreamSource] {
         StreamFinder.rank(sources, order: app?.sources.rankingOrder ?? [],
-                          audio: app?.settings.audioPreference.streamAudio, maxQuality: app?.settings.streamQualityCap)
+                          audio: app?.settings.audioPreference.streamAudio, maxQuality: app?.settings.streamQualityCap,
+                          language: app?.settings.audioLanguage)
     }
 
     /// The first stream found waits a moment for better ones from slower sources.
@@ -514,6 +520,9 @@ final class PlaybackModel {
         bufferTask?.cancel()
         isBuffering = false
         bufferingSince = nil
+        audioTracks = []
+        selectedAudioTrack = nil
+        audibleGroup = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
     }
@@ -554,6 +563,88 @@ final class PlaybackModel {
         guard let http, [401, 403, 404, 410].contains(http) else { return }
         hardErrors += 1
         if hardErrors >= 2 { sourceFailed(source) }
+    }
+
+    // MARK: Audio
+
+    /// Reads the stream's audio tracks once it opens, and switches to the viewer's language if the
+    /// stream has it.
+    private func loadAudioTracks(_ item: AVPlayerItem, source: StreamSource) {
+        Task {
+            guard let group = try? await item.asset.loadMediaSelectionGroup(for: .audible),
+                  current?.id == source.id, player.currentItem === item
+            else { return }
+            audibleGroup = group
+            audioTracks = group.options
+            selectedAudioTrack = item.currentMediaSelection.selectedMediaOption(in: group)
+            Log.playback.info("Audio tracks: \(group.options.map(\.displayName).joined(separator: ", "), privacy: .public)")
+            if let language = app?.settings.audioLanguage, Self.language(of: selectedAudioTrack) != language,
+               let match = group.options.first(where: { Self.language(of: $0) == language }) {
+                item.select(match, in: group)
+                selectedAudioTrack = match
+            }
+        }
+    }
+
+    static func language(of option: AVMediaSelectionOption?) -> String? {
+        guard let option else { return nil }
+        if let code = option.locale?.language.languageCode?.identifier { return code }
+        return option.extendedLanguageTag.map { String($0.prefix(2)).lowercased() }
+    }
+
+    /// The languages of what's playing: its tracks, else what its source says.
+    var currentLanguages: [String] {
+        let fromTracks = audioTracks.compactMap { Self.language(of: $0) }
+        return fromTracks.isEmpty ? (current?.audioLanguages ?? []) : fromTracks
+    }
+
+    /// One stream for each language the playing stream doesn't have, the best of each.
+    var otherLanguageStreams: [(language: String, source: StreamSource)] {
+        let have = Set(currentLanguages)
+        var seen = Set<String>()
+        var result: [(String, StreamSource)] = []
+        for source in sources where source.id != current?.id && source.isLikelyPlayable && !failedSources.contains(source.id) {
+            for language in source.audioLanguages where !have.contains(language) && seen.insert(language).inserted {
+                result.append((language, source))
+            }
+        }
+        return result.sorted { AudioLanguages.name($0.0) < AudioLanguages.name($1.0) }
+    }
+
+    /// Sources were skipped because the remembered one had streams; asking them finds the
+    /// languages they have, while playback carries on.
+    var canLookForMore: Bool { !skippedSources.isEmpty && !isLookingForMore }
+    private(set) var isLookingForMore = false
+
+    func lookForMoreStreams() {
+        guard let finder = app?.sources.finder, let identity, canLookForMore else { return }
+        let ids = skippedSources
+        isLookingForMore = true
+        Log.playback.notice("Looking for more streams in \(ids.count) sources while playing")
+        furtherTask = Task {
+            for await update in finder.search(identity, only: ids) {
+                guard !Task.isCancelled else { return }
+                statuses[update.providerID] = update.status
+                guard !update.sources.isEmpty else { continue }
+                sources = rank(sources + update.sources)
+                refreshSubtitleOptions()
+            }
+            isLookingForMore = false
+        }
+    }
+
+    func selectAudioTrack(_ option: AVMediaSelectionOption) {
+        guard let item = player.currentItem, let group = audibleGroup else { return }
+        item.select(option, in: group)
+        selectedAudioTrack = option
+        if let language = Self.language(of: option) { app?.settings.audioLanguage = language }
+    }
+
+    /// Another stream in that language, at the same spot; the language is remembered.
+    func playLanguage(_ language: String, from source: StreamSource) {
+        app?.settings.audioLanguage = language
+        Log.playback.notice("Switching to \(language, privacy: .public) from \(source.providerID, privacy: .public)")
+        choose(source)
     }
 
     // MARK: Subtitles
@@ -665,6 +756,7 @@ final class PlaybackModel {
                 switch status {
                 case .readyToPlay:
                     model.stallTask?.cancel()
+                    if model.audioTracks.isEmpty, let item = model.player.currentItem { model.loadAudioTracks(item, source: source) }
                     if let seek = model.pendingSeek {
                         model.pendingSeek = nil
                         await model.player.seek(to: CMTime(seconds: seek, preferredTimescale: 600))

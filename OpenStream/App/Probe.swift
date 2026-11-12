@@ -95,7 +95,8 @@ enum Probe {
             if item.status == .readyToPlay, seconds > 1.5 {
                 let size = item.presentationSize
                 player.pause()
-                return "playing (t=\(Int(seconds))s, \(Int(size.width))x\(Int(size.height)), duration \(Int(CMTimeGetSeconds(item.duration)))s)"
+                let audio = (try? await asset.loadMediaSelectionGroup(for: .audible))?.options.map(\.displayName) ?? []
+                return "playing (t=\(Int(seconds))s, \(Int(size.width))x\(Int(size.height)), duration \(Int(CMTimeGetSeconds(item.duration)))s, audio \(audio), languages \(source.audioLanguages))"
             }
         }
         player.pause()

@@ -149,7 +149,7 @@ public final class StreamFinder: Sendable {
     /// playability; `maxQuality` treats anything above it as that quality, so a 4K stream doesn't
     /// win over 1080p for someone who capped at 1080p.
     public static func rank(_ sources: [StreamSource], order: [String], audio: StreamAudio? = nil,
-                            maxQuality: StreamQuality? = nil) -> [StreamSource] {
+                            maxQuality: StreamQuality? = nil, language: String? = nil) -> [StreamSource] {
         let position = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         func score(_ quality: StreamQuality) -> Int {
             let value = quality == .unknown ? StreamQuality.q720.rawValue : quality.rawValue
@@ -163,6 +163,10 @@ public final class StreamFinder: Sendable {
         return sources.enumerated().sorted { a, b in
             let (x, y) = (a.element, b.element)
             if x.playabilityRank != y.playabilityRank { return x.playabilityRank > y.playabilityRank }
+            if let language {
+                let lx = x.audioLanguages.contains(language), ly = y.audioLanguages.contains(language)
+                if lx != ly { return lx }
+            }
             if matches(x) != matches(y) { return matches(x) }
             if score(x.quality) != score(y.quality) { return score(x.quality) > score(y.quality) }
             let px = position[x.providerID] ?? .max, py = position[y.providerID] ?? .max

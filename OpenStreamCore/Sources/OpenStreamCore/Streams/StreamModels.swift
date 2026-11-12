@@ -64,6 +64,35 @@ public enum StreamQuality: Int, Comparable, Codable, Sendable, CaseIterable {
     }
 }
 
+/// Spoken languages named in a source's own label ("1080p | 🔊 Eng", "Hindi DD5.1", "Dual
+/// Audio [Hin-Eng]"): whole words only, so "Hotel" never reads as Telugu.
+public enum AudioLanguages {
+    private static let words: [(String, String)] = [
+        ("english", "en"), ("eng", "en"), ("hindi", "hi"), ("hin", "hi"), ("tamil", "ta"), ("tam", "ta"),
+        ("telugu", "te"), ("tel", "te"), ("malayalam", "ml"), ("kannada", "kn"), ("bengali", "bn"),
+        ("japanese", "ja"), ("jap", "ja"), ("jpn", "ja"), ("korean", "ko"), ("kor", "ko"),
+        ("spanish", "es"), ("spa", "es"), ("latino", "es"), ("castellano", "es"), ("french", "fr"), ("fre", "fr"),
+        ("german", "de"), ("ger", "de"), ("deutsch", "de"), ("italian", "it"), ("ita", "it"),
+        ("portuguese", "pt"), ("por", "pt"), ("russian", "ru"), ("rus", "ru"), ("arabic", "ar"), ("ara", "ar"),
+        ("chinese", "zh"), ("mandarin", "zh"), ("cantonese", "zh"), ("turkish", "tr"), ("tur", "tr"),
+        ("thai", "th"), ("indonesian", "id"), ("polish", "pl"), ("dutch", "nl"), ("ukrainian", "uk"),
+    ]
+
+    public static func detect(_ text: String) -> [String] {
+        let tokens = text.lowercased().split { !$0.isLetter }.map(String.init)
+        var found: [String] = []
+        for token in tokens {
+            if let code = words.first(where: { $0.0 == token })?.1, !found.contains(code) { found.append(code) }
+        }
+        return found
+    }
+
+    /// "English", in the viewer's language.
+    public static func name(_ code: String) -> String {
+        Locale.current.localizedString(forLanguageCode: code)?.capitalized(with: .current) ?? code
+    }
+}
+
 public enum StreamAudio: String, Codable, Sendable {
     case original, dub, multi, unknown
 
@@ -102,11 +131,14 @@ public struct StreamSource: Identifiable, Hashable, Sendable {
     public var isHLSHint: Bool
     /// The file's extension when the source names the file but the link doesn't ("mkv").
     public var fileExtension: String?
+    /// Spoken languages the source says the stream has (ISO 639-1: "en", "hi"); empty when it
+    /// doesn't say.
+    public var audioLanguages: [String]
 
     public init(id: String, providerID: String, providerName: String, name: String, url: URL,
                 quality: StreamQuality = .unknown, audio: StreamAudio = .unknown, audioLanguage: String? = nil,
                 headers: [String: String] = [:], subtitles: [StreamSubtitle] = [], isHLSHint: Bool = false,
-                fileExtension: String? = nil) {
+                fileExtension: String? = nil, audioLanguages: [String] = []) {
         self.id = id
         self.providerID = providerID
         self.providerName = providerName
@@ -119,6 +151,7 @@ public struct StreamSource: Identifiable, Hashable, Sendable {
         self.subtitles = subtitles
         self.isHLSHint = isHLSHint
         self.fileExtension = fileExtension?.lowercased()
+        self.audioLanguages = audioLanguages
     }
 
     public var isHLS: Bool { isHLSHint || url.path.lowercased().hasSuffix(".m3u8") }

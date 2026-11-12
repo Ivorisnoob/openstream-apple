@@ -153,6 +153,16 @@ struct StreamTests {
         #expect(StreamFinder.rank([source("hls", "b", .q720), unknown], order: []).first?.id == "file")
     }
 
+    @Test func audioLanguagesFromLabels() {
+        #expect(AudioLanguages.detect("1080p | Eng") == ["en"])
+        #expect(AudioLanguages.detect("Dual Audio [Hin-Eng] DD5.1") == ["hi", "en"])
+        #expect(AudioLanguages.detect("Hotel Transylvania 1080p").isEmpty)
+        var hindi = StreamSource(id: "h", providerID: "b", providerName: "b", name: "h", url: URL(string: "https://h/a.m3u8")!, quality: .q720)
+        hindi.audioLanguages = ["hi"]
+        let other = StreamSource(id: "o", providerID: "a", providerName: "a", name: "o", url: URL(string: "https://h/b.m3u8")!, quality: .q1080)
+        #expect(StreamFinder.rank([other, hindi], order: ["a", "b"], language: "hi").first?.id == "h")
+    }
+
     @Test func bundledCatalog() {
         let catalog = Catalog.bundled
         #expect(catalog.extensions.count > 10)

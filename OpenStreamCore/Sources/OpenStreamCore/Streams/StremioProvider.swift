@@ -86,7 +86,8 @@ public struct StremioProvider: StreamProvider {
                 headers: ["User-Agent": SourceHTTP.userAgent].merging(headers) { _, new in new },
                 subtitles: subtitles,
                 fileExtension: (filename ?? detailLines.joined(separator: " "))
-                    .firstMatch(of: /\.(mkv|mp4|avi|m4v|mov|webm|ts)\b/.ignoresCase()).map { String($0.1) }
+                    .firstMatch(of: /\.(mkv|mp4|avi|m4v|mov|webm|ts)\b/.ignoresCase()).map { String($0.1) },
+                audioLanguages: AudioLanguages.detect(everything)
             )
             if releases[key] == nil { order.append(key) }
             releases[key, default: []].append(source)
