@@ -29,7 +29,7 @@ struct SourcesView: View {
                 } header: {
                     Text("Coming to the Mac")
                 } footer: {
-                    Text("These anime sites need their own readers, which this version doesn't have yet.")
+                    Text("These need readers this version doesn't have yet: animepahe sits behind a Cloudflare check, FourAnimo has moved, and AnimeGG is still to come.")
                 }
             }
         }

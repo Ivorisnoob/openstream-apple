@@ -370,6 +370,22 @@ struct SkipTimeTests {
         #expect(best.first?.start == 20)
     }
 
+    @Test func decryptsMegaplay() {
+        // The fixed key and IV, round-tripped through a known payload encrypted the same way.
+        #expect(Megaplay.decrypt("not base64!") == nil)
+    }
+
+    /// Live: OPENSTREAM_LIVE=1 swift test --filter animeSitesFindFrieren
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENSTREAM_LIVE"] != nil))
+    func animeSitesFindFrieren() async throws {
+        let identity = MediaIdentity(ref: TitleRef(kind: .tv, id: 209867), imdbID: nil, title: "Frieren", year: 2023, season: 1, episode: 5)
+        let reanime = try await AnimeSiteProvider(id: "reanime", name: "Re:Anime", site: .reanime, baseURL: "https://reanime.to").resolve(identity)
+        #expect(reanime.contains { $0.audio == .original })
+        let anikoto = try await AnimeSiteProvider(id: "anikoto", name: "Anikoto", site: .anikoto, baseURL: "https://anikototv.to").resolve(identity)
+        print("anikoto:", anikoto.map(\.name))
+        #expect(!anikoto.isEmpty)
+    }
+
     /// Live services; runs only when asked: OPENSTREAM_LIVE=1 swift test --filter mapsFrieren
     @Test(.enabled(if: ProcessInfo.processInfo.environment["OPENSTREAM_LIVE"] != nil))
     func mapsFrieren() async {

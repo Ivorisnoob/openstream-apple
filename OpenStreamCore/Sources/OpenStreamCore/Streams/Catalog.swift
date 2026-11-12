@@ -71,7 +71,7 @@ public struct Catalog: Codable, Sendable, Hashable {
 extension Catalog.Entry {
     /// Engines this version can run. The anime sites' own engines come later.
     public var isSupported: Bool {
-        ["vidking-direct", "stremio", "web-embed", "vidking-webview"].contains(engine.type)
+        ["vidking-direct", "stremio", "web-embed", "vidking-webview", "reanime", "anikoto"].contains(engine.type)
     }
 
     public func provider(sniffer: any WebPlayerSniffing) -> (any StreamProvider)? {
@@ -86,6 +86,9 @@ extension Catalog.Entry {
         case "web-embed":
             return WebPlayerProvider(id: id, name: name, movieTemplate: engine.movieUrl, tvTemplate: engine.tvUrl,
                                      isFallback: true, sniffer: sniffer)
+        case "reanime", "anikoto":
+            guard let endpoint = engine.endpoint, let site = AnimeSiteProvider.Site(rawValue: engine.type) else { return nil }
+            return AnimeSiteProvider(id: id, name: name, site: site, baseURL: endpoint)
         case "vidking-webview":
             return WebPlayerProvider(id: id, name: name,
                                      movieTemplate: "https://www.vidking.net/embed/movie/{tmdbId}?autoPlay=true",
