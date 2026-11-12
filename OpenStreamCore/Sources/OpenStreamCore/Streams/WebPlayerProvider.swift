@@ -11,11 +11,14 @@ public struct SniffedStream: Sendable, Hashable {
     /// The page or frame that asked for it, which the host expects as Referer and Origin.
     public var frame: URL?
     public var qualityHint: String?
+    /// Headers the page's own data says the stream needs (vidlink's `playlistHeaders`: cookies).
+    public var headers: [String: String]
 
-    public init(url: URL, frame: URL?, qualityHint: String?) {
+    public init(url: URL, frame: URL?, qualityHint: String?, headers: [String: String] = [:]) {
         self.url = url
         self.frame = frame
         self.qualityHint = qualityHint
+        self.headers = headers
     }
 }
 
@@ -67,6 +70,7 @@ public struct WebPlayerProvider: StreamProvider {
                 quality: StreamQuality.parse(stream.qualityHint ?? stream.url.absoluteString),
                 audio: StreamAudio.parse(stream.qualityHint),
                 headers: ["User-Agent": SourceHTTP.userAgent, "Referer": origin + "/", "Origin": origin]
+                    .merging(stream.headers) { _, own in own }
             )
         }
     }

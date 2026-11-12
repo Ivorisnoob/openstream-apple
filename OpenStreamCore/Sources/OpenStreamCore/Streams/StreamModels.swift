@@ -155,10 +155,13 @@ public struct StreamSource: Identifiable, Hashable, Sendable {
     }
 
     public var isHLS: Bool { isHLSHint || url.path.lowercased().hasSuffix(".m3u8") }
+    /// Played through the app's DASH-to-HLS gateway.
+    public var isDASH: Bool { url.path.lowercased().hasSuffix(".mpd") || fileExtension == "mpd" }
 
     /// "HLS", "MP4", "MKV": AVFoundation plays the first two; the rest are offered but may fail.
     public var container: String {
         if isHLS { return "HLS" }
+        if isDASH { return "DASH" }
         return knownExtension?.uppercased() ?? "File"
     }
 
@@ -168,16 +171,18 @@ public struct StreamSource: Identifiable, Hashable, Sendable {
         return fileExtension
     }
 
-    /// AVFoundation can't open Matroska, AVI or DASH; such streams are listed last and never
-    /// picked automatically.
+    /// AVFoundation can't open Matroska, AVI or WebM; such streams are listed last and never
+    /// picked automatically. DASH plays through the gateway.
     public var isLikelyPlayable: Bool {
-        !["mkv", "avi", "mpd", "webm", "ts"].contains(knownExtension ?? "")
+        !["mkv", "avi", "webm", "ts"].contains(knownExtension ?? "")
     }
 
     /// How sure AVFoundation is to open it: HLS, then MP4-family files, then links that don't say.
     public var playabilityRank: Int {
         if isHLS { return 2 }
         if ["mp4", "m4v", "mov"].contains(knownExtension ?? "") { return 2 }
+        // Rewritten as HLS on the device: it plays, but a native HLS stream is the surer bet.
+        if isDASH { return 1 }
         return isLikelyPlayable ? 1 : 0
     }
 }

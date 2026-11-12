@@ -298,3 +298,54 @@ struct WorkingSourcesTests {
         #expect(WorkingSources(file: file).provider(for: TitleRef(kind: .movie, id: 7)) == "hdhub")
     }
 }
+
+@Suite("DASH")
+struct DashTests {
+    let base = URL(string: "https://cdn.example/dash/abc/index_web.mpd")!
+
+    private func manifest() throws -> DashManifest {
+        let url = try #require(Bundle.module.url(forResource: "vidlink", withExtension: "mpd", subdirectory: "Fixtures"))
+        return try DashManifest.parse(Data(contentsOf: url), url: base)
+    }
+
+    @Test func readsAnFFmpegManifest() throws {
+        let dash = try manifest()
+        #expect(dash.duration == 36)
+        #expect(dash.videos.map(\.height) == [1080, 720, 480])
+        #expect(dash.audios.first?.language == "eng")
+        let video = try #require(dash.videos.first)
+        #expect(video.segments.count == 7) // six timeline entries, one repeated once
+        #expect(video.segments[0].url.absoluteString == "https://cdn.example/dash/abc/chunk-stream0-00001.m4s")
+        #expect(video.initialization.absoluteString == "https://cdn.example/dash/abc/init-stream0.m4s")
+        #expect(abs(video.segments[0].duration - 143143.0 / 24000) < 0.0001)
+    }
+
+    @Test func writesHLS() throws {
+        let dash = try manifest()
+        let master = DashToHLS.master(dash, scheme: "osdash", id: "x")
+        #expect(master.contains("CODECS=\"hvc1.1.6.L120.90,mp4a.40.2\""))
+        #expect(master.contains("TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"English\",LANGUAGE=\"en\""))
+        #expect(master.contains("osdash://x/0.m3u8"))
+        let media = DashToHLS.media(dash.videos[0], scheme: "osdash", id: "x")
+        #expect(media.contains("#EXT-X-MAP:URI=\"osdash://x/0/init.mp4\""))
+        #expect(media.contains("https://cdn.example/dash/abc/chunk-stream0-00002.m4s"))
+        #expect(media.hasSuffix("#EXT-X-ENDLIST\n"))
+    }
+
+    @Test func languages() {
+        #expect(DashToHLS.languageCode("eng") == "en")
+        #expect(DashToHLS.languageCode("und") == nil)
+        #expect(DashToHLS.languageCode("pt-BR") == "pt")
+    }
+
+    @Test func durations() {
+        #expect(DashManifest.seconds("PT2H28M8.0S") == 8888)
+        #expect(DashManifest.seconds("PT45.5S") == 45.5)
+        #expect(DashManifest.seconds("P1DT1M") == 86460)
+    }
+
+    @Test func retagsHEVC() {
+        let data = Data([0, 0, 0, 20] + Array("hev1".utf8) + [1, 2, 3])
+        #expect(Array(DashToHLS.retagHEVC(data)[4..<8]) == Array("hvc1".utf8))
+    }
+}

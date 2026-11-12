@@ -78,10 +78,8 @@ enum Probe {
 
     @MainActor
     private static func tryPlaying(_ source: StreamSource) async -> String {
-        var headers = source.headers
-        let agent = headers.removeValue(forKey: "User-Agent") ?? SourceHTTP.userAgent
-        let asset = AVURLAsset(url: source.url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers,
-                                                          AVURLAssetHTTPUserAgentKey: agent])
+        let asset: AVURLAsset
+        do { asset = try await StreamAssets.asset(for: source) } catch { return "couldn't open: \(error)" }
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
         player.isMuted = true

@@ -144,8 +144,11 @@ private final class SniffSession: NSObject, WKScriptMessageHandler, WKNavigation
     private func walk(_ value: Any, frame: URL?, quality: String?) {
         if let object = value as? [String: Any] {
             let quality = (object["quality"] as? String) ?? (object["label"] as? String) ?? quality
+            // Headers a page's data says its stream needs: vidlink's CloudFront cookies.
+            let headers = ((object["playlistHeaders"] ?? object["headers"]) as? [String: Any])?
+                .compactMapValues { $0 as? String } ?? [:]
             for key in ["url", "file", "src", "source", "playlist"] {
-                if let link = object[key] as? String { add(link, frame: frame, quality: quality) }
+                if let link = object[key] as? String { add(link, frame: frame, quality: quality, headers: headers) }
             }
             for child in object.values { walk(child, frame: frame, quality: quality) }
         } else if let array = value as? [Any] {
@@ -153,11 +156,16 @@ private final class SniffSession: NSObject, WKScriptMessageHandler, WKNavigation
         }
     }
 
-    private func add(_ link: String, frame: URL?, quality: String?) {
+    private func add(_ link: String, frame: URL?, quality: String?, headers: [String: String] = [:]) {
         guard continuation != nil, let url = URL(string: link, relativeTo: frame)?.absoluteURL,
-              Self.isStream(url), found[url] == nil
+              Self.isStream(url)
         else { return }
-        found[url] = SniffedStream(url: url, frame: frame, qualityHint: quality)
+        // The same link seen again with the headers it needs (from the page's data) gets them.
+        if var known = found[url] {
+            if known.headers.isEmpty, !headers.isEmpty { known.headers = headers; found[url] = known }
+            return
+        }
+        found[url] = SniffedStream(url: url, frame: frame, qualityHint: quality, headers: headers)
         // Pages often ask for several renditions in a row; wait a moment for the rest.
         settleTask?.cancel()
         settleTask = Task {
@@ -176,7 +184,7 @@ private final class SniffSession: NSObject, WKScriptMessageHandler, WKNavigation
         let path = url.path.lowercased()
         // Players load short placeholder clips before the film; those are never the stream.
         if ["demo", "sample", "preroll", "placeholder", "intro.mp4"].contains(where: path.contains) { return false }
-        return path.hasSuffix(".m3u8") || path.hasSuffix(".mp4") || text.contains(".m3u8?")
+        return path.hasSuffix(".m3u8") || path.hasSuffix(".mp4") || path.hasSuffix(".mpd") || text.contains(".m3u8?")
     }
 
     // MARK: Keeping to the player

@@ -368,13 +368,37 @@ final class PlaybackModel {
         phase = .loading
         finishedThisItem = false
 
-        var headers = source.headers
-        let agent = headers.first { $0.key.caseInsensitiveCompare("User-Agent") == .orderedSame }
-        if let agent { headers[agent.key] = nil }
-        let asset = AVURLAsset(url: source.url, options: [
-            "AVURLAssetHTTPHeaderFieldsKey": headers,
-            AVURLAssetHTTPUserAgentKey: agent?.value ?? SourceHTTP.userAgent,
-        ])
+        hardErrors = 0
+        playedSeconds = 0
+        lastPlayingTick = nil
+        rememberedThisStream = false
+        Log.playback.notice("Play \(source.providerID, privacy: .public) \(source.quality.label, privacy: .public) \(source.container, privacy: .public) \(source.url.host() ?? "", privacy: .public)")
+        refreshSubtitleOptions()
+
+        // A stream that hasn't started in 20 seconds is as good as broken.
+        stallTask = Task {
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, current?.id == source.id, phase == .loading else { return }
+            sourceFailed(source)
+        }
+
+        // DASH has its manifest fetched and rewritten first; everything else opens at once.
+        Task {
+            let asset: AVURLAsset
+            do {
+                asset = try await StreamAssets.asset(for: source)
+            } catch {
+                guard current?.id == source.id else { return }
+                Log.playback.error("Couldn't open \(source.container, privacy: .public) from \(source.providerID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                sourceFailed(source)
+                return
+            }
+            guard current?.id == source.id else { return }
+            attach(asset, source: source)
+        }
+    }
+
+    private func attach(_ asset: AVURLAsset, source: StreamSource) {
         let item = AVPlayerItem(asset: asset)
         if let cap = app?.settings.maxQuality, cap > 0 {
             // A square of the height's size: the width a stream reports varies with its shape.
@@ -387,21 +411,8 @@ final class PlaybackModel {
                                                               queue: .main, using: Self.failedMidway(self, source: source))
         errorLogObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.newErrorLogEntryNotification, object: item,
                                                                   queue: .main, using: Self.errorLogged(self, source: source))
-        hardErrors = 0
-        playedSeconds = 0
-        lastPlayingTick = nil
-        rememberedThisStream = false
-        Log.playback.notice("Play \(source.providerID, privacy: .public) \(source.quality.label, privacy: .public) \(source.container, privacy: .public) \(source.url.host() ?? "", privacy: .public)")
         player.replaceCurrentItem(with: item)
         player.play()
-        refreshSubtitleOptions()
-
-        // A stream that hasn't started in 20 seconds is as good as broken.
-        stallTask = Task {
-            try? await Task.sleep(for: .seconds(20))
-            guard !Task.isCancelled, current?.id == source.id, phase == .loading else { return }
-            sourceFailed(source)
-        }
     }
 
     private func sourceFailed(_ source: StreamSource) {
